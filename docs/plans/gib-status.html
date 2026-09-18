@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gib — Delivery Status</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 62rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1a1a1a; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: .3rem; }
+  h2 { margin-top: 2.2rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #bbb; padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  code { background: #f4f4f4; padding: .05rem .3rem; border-radius: 3px; font-size: .92em; word-break: break-all; }
+  .done { color: #146c2e; font-weight: 600; }
+  .partial { color: #b07d00; font-weight: 600; }
+  .gap { color: #b02a2a; font-weight: 600; }
+  .box { border: 1px solid #999; border-left: 5px solid #555; padding: .6rem 1rem; margin: 1rem 0; }
+  .bad { border-left-color: #b02a2a; }
+  .good { border-left-color: #146c2e; }
+</style>
+</head>
+<body>
+
+<h1>gib — Delivery Status</h1>
+<p><em>Written 2026-09-18. Companion to gib-format.html, gib-token.html, gib-cli.html,
+gib-rationale.html in this folder. Honest view of the deliverable: what exists,
+what's fake, what's missing.</em></p>
+
+<h2>1. Where things live</h2>
+<table>
+<tr><th>Thing</th><th>Path</th></tr>
+<tr><td>CLI source (Bun/TS, ~700 lines)</td><td><code>/root/code/gib-cli/src/</code> — <code>main.ts</code> (commands), <code>ordfs.ts</code> (read path), <code>token.ts</code> (PushDrop branch coins), <code>state.ts</code> (.gib local state), <code>directory.ts</code>, <code>wallet.ts</code> (BRC-100 connect)</td></tr>
+<tr><td>Design docs</td><td><code>/root/code/docs/plans/gib-*.html</code> (this status doc lives here too)</td></tr>
+<tr><td>SDK patch</td><td><code>/root/code/1sat-sdk/packages/actions/src/ordfs/outputs.ts</code> — <code>OP_FALSE OP_RETURN</code> fix for <code>b</code>-mode outputs, rebuilt into dist, NOT yet committed upstream</td></tr>
+</table>
+
+<h2>2. Completed and verified on mainnet</h2>
+<table>
+<tr><th>Item</th><th>Evidence</th></tr>
+<tr>
+<td><span class="done">Genesis publish</span> — whole tree → ord-fs directory in B mode, unsigned, via wallet API</td>
+<td>tx <code>c657be5a7dacd7bb7343d92b7195d1366dbecd3ec31874576189efd28eee007c</code> — MINED. All 13 data outputs <code>OP_FALSE OP_RETURN</code>, fee exactly 100 sat/kB raw.</td>
+</tr>
+<tr>
+<td><span class="done">Clone (read path)</span> — root manifest → recursive walk → byte-identical tree</td>
+<td>Two clone roundtrips, sha256-verified against source, nesting intact, <code>diff -r</code> clean. Works pre-mining (ORDFS serves mempool).</td>
+</tr>
+<tr>
+<td><span class="done">Branch token (push-drop coin)</span> — mint, spend, recreate; sealed PushDrop naming a root outpoint; spend authority = push authority</td>
+<td>Chain of 4 coins, each verified spent-by the next: <code>ea37133ee0c26db03568cb074f111ee3398f3bbbc106a7c85dcc33b3a7fea5f3</code> → <code>686cae487475bf005045b7658742556ac673c983b0128343d03511286c00bd20</code> → <code>688e1f09de951c610693cc21d91250ade9f4922e389c1d8de55f20d5d1a891c4</code> → <code>83c55ad839d8bca1042909663b6a1d7468e7dfd71c67cd43d52363a254359138</code>. Tip coin independently decoded from a BEEF fetch: names its root, sealed under lineage key.</td>
+</tr>
+<tr>
+<td><span class="done">Push</span> — full create→unlock→signAction cycle with client-side PushDrop unlock</td>
+<td>Spends verified via <code>/txo/.../spend</code>. Token chain above.</td>
+</tr>
+<tr>
+<td><span class="done">ORDFS SDK bug fixed</span> — b-mode zero-sat outputs were dust-invalid (bare OP_RETURN)</td>
+<td>First publish <code>67ff7e9b…</code> proved the failure (never mined); fix shipped in patch above; second publish mined. Upstream contribution pending.</td>
+</tr>
+</table>
+
+<h2>3. Got wrong (recorded so it isn't repeated)</h2>
+
+<div class="box bad">
+<strong>The big one: commit was built against the wrong model.</strong>
+<code>gib commit</code> republishes the <em>entire tree</em> via <code>deployOrdfsDir</code>.
+That violates the format's core rule: content is write-once; genesis is the only
+full publish; every later state is a <em>record</em> citing a base outpoint
+(<code>[1B version][1B diff type][36B base][git diff]</code>). No record output has
+ever been created. The diff-type registry is unexercised. Commit, and the
+record-resolution half of clone, are the unbuilt core of the project — everything
+else is scaffolding that works.
+</div>
+
+<div class="box bad">
+<strong>Sequencing error.</strong> Status/branch bookkeeping was built around the
+republish hack and needs rework at the same time as commit (manifest entries must
+distinguish leaves vs records).
+</div>
+
+<p>Smaller mistakes, all now captured in the <code>onesat-env</code> skill:
+pushes signed but silently never broadcast (wallet-api doesn't run the task loop —
+monitor must run alongside); treated <code>createAction</code>'s unsigned txid as a
+broadcast; probed protocol validity with a call that bypasses validation; published
+a debug file (<code>67ff7e9b.rawtx.hex</code>) to chain forever — no ignore-file
+rule existed.</p>
+
+<h2>4. Outstanding</h2>
+<table>
+<tr><th>Priority</th><th>Task</th><th>Notes</th></tr>
+<tr><td>1</td><td><span class="gap">Record format proof</span></td><td>Hand-build one tx: record output (<code>0x01 0x01</code> + base <code>c657be5a…_1</code> + git diff of README) + manifest referencing it. Decode, apply diff against ORDFS base bytes, compare.</td></tr>
+<tr><td>2</td><td><span class="gap">Rewrite commit</span></td><td>Hand-built createAction: records for changed files, raw B output only for new files, no outputs for unchanged, manifest last. Mixed pointers (<code>_vout</code> local, full <code>txid_vout</code> external).</td></tr>
+<tr><td>3</td><td><span class="gap">Record-aware clone</span></td><td>Manifest entry → record → walk bases to genesis leaf → apply diffs forward. ORDFS cannot do this; CLI logic.</td></tr>
+<tr><td>4</td><td><span class="partial">Discover root by branch token</span></td><td>Clone today needs a root outpoint. Walking a token coin's spend history to the current tip is the "clone from a pubkey/coin" feature.</td></tr>
+<tr><td>5</td><td><span class="partial">Wallet infra residency</span></td><td>Monitor runs as a background process but no supervision/auto-restart. Abandoned-action cleanup untested at scale.</td></tr>
+<tr><td>6</td><td><span class="partial">Upstream the SDK patch</span></td><td>The OP_FALSE fix is local-only in a rebuilt dist. Someone else deploying b-mode hits the same dust wall.</td></tr>
+<tr><td>7</td><td><span class="partial">.gibignore / dotfile rules</span></td><td>Manifest-building policy; also exclude <code>.gib/</code> itself from publish (currently published!).</td></tr>
+</table>
+
+<h2>4b. Corrected read-path design (agreed 2026-09-18, supersedes parts of §3)</h2>
+<p class="note"><em>Further superseded same day:</em> no <code>.gib</code> directory at all —
+repos are plain git repos with <code> gib://&lt;origin&gt;</code> remotes; ONE global txstore
+per install; wallet is the ref database. See gib-cli.html (rewritten) for current architecture.</p>
+<div class="box">
+<p><strong>Cache every transaction, forever.</strong> A transaction is the immutable,
+self-verifiable unit: content-addressed by txid; recompute-the-txid-over-parsed-bytes
+proves provenance. The current read path (per-file content fetches via a hand-rolled
+<code>ordfs.ts</code>) is throwaway scraping and is being replaced.</p>
+<ul>
+<li><strong><code>txstore</code></strong>: local store of every tx gib has ever seen. Read path becomes
+<code>ensure(txid)</code> → parse outputs locally (<code>B.decode</code>) → manifests, leaves, and records
+all resolve from the store. Nothing is ever refetched or invalidated.</li>
+<li><strong>Transport</strong>: <code>GET /1sat/beef/{txid}</code> for a single tx;
+<code>GET /1sat/ordfs/stream/{outpoint}</code> streams the whole BEEF for an ord-fs tree in one
+request — a genesis clone is one fetch, not N. Metadata endpoints with <code>:seq</code> history
+and origin correlation handle spent-output resolution server-side.</li>
+<li><strong>NO content from ORDFS — fundamental requirement.</strong> Gib reads
+transactions, period (BEEF from chain/wallet → txstore). Gib correlates on-chain tx
+history with the on-disk working tree: diffs, checkouts at any historical point,
+resolved from records and manifests parsed locally. ORDFS is only a slight indexer
+for ordinal/origin correlation lookups. Every <code>content/&lt;outpoint&gt;</code> call is
+removed, not demoted — there is no fallback use. Rendering for dumb ORDFS
+consumers is irrelevant; gib is its own format (no browser reads git objects either).</li>
+<li><strong>Manifest cascade is definitional, not optional</strong>: a manifest is its entry
+list; when an entry's tip changes the manifest's bytes change → new output → parents
+republish up to a new root. No frozen-subdir + root-override schemes.</li>
+<li><strong><code>ordfs.ts</code> is deleted</strong> outright — no replacement client needed
+for the data path; tx fetching is BEEF + SDK parsing. The recursive tree walk stays
+in gib as manifest-cascade logic over the txstore.</li>
+<li><strong>Record chains fit the store</strong>: each record cites a base outpoint; reading a file
+walks txids, each hop one cached tx. <em>Tradeoff accepted:</em> a coalesced tx with 500 files
+means fetching 500 files to read one — publish-time tx batching is the mitigation (design
+point for the commit rewrite).</li>
+</ul>
+</div>
+
+<h2>5. Confidence</h2>
+<div class="box good"><strong>High:</strong> content addressing (outpoints as citations), the ORDFS read path, the token model (mint/spend/verify is proven on chain, not just in code), fee/dust correctness, clone byte-fidelity, the wallet-API patterns (now documented).</div>
+<div class="box bad"><strong>Low / untested:</strong> the record envelope has never existed outside the design doc — base-outpoint wire encoding, diff application, and manifest mixing of record/leaf pointers are design-only. Multi-directory record chains (a commit touching files in two subdirs, manifests cascading) are unthought-through. Token lineage across branch <em>names</em> (currently one implicit branch). Anyone-but-the-author clone: never attempted from a fresh identity/wallet.</div>
+<div class="box"><strong>Known unknown:</strong> how the chain handles a 36-byte binary outpoint inside an otherwise-text manifest ecosystem — decided to keep records binary and manifests JSON, but nothing on chain proves the tooling won't mangle it.</div>
+
+</body>
+</html>

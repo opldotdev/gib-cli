@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en" data-bitplan-template="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>On-chain Git · draft plan v5</title>
+<style>
+:root{
+  --bp-paper:#faf7ef;--bp-ink:#24221e;--bp-muted:#69645b;--bp-accent:#79563c;
+  --surface:#f1ecdf;--line:#e0d8c6;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bp-paper:#191815;--bp-ink:#e8e4da;--bp-muted:#9a948a;--bp-accent:#c9a06a;
+  --surface:#22201c;--line:#33302a;}
+}
+*{box-sizing:border-box}body{margin:0;background:var(--bp-paper);color:var(--bp-ink);font:15px/1.6 system-ui,sans-serif}
+main{max-width:47rem;margin:auto;padding:32px 20px 64px}
+.lede{color:var(--bp-muted);max-width:58ch}
+h1{font-size:1.6rem;margin:0 0 12px;line-height:1.25}
+h2{margin:42px 0 14px;font-size:1.15rem;border-top:1px solid var(--line);padding-top:22px;scroll-margin-top:24px}
+h3{font-size:1rem;margin:22px 0 8px}
+p{margin:0 0 14px}li{margin-bottom:8px}ul{padding-left:22px}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+code{background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:14px 16px;border-radius:8px;border:1px solid var(--line);margin:0 0 16px}
+.status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--bp-accent);color:var(--bp-accent);margin-bottom:18px}
+.note{border-left:3px solid var(--bp-accent);padding:2px 0 2px 14px;margin:18px 0;color:var(--bp-muted)}
+.rule{border:1px solid var(--bp-accent);border-radius:10px;padding:12px 16px;margin:18px 0}
+a{color:var(--bp-accent);text-underline-offset:4px}
+details{border-top:1px solid var(--line);padding:12px 0}summary{cursor:pointer;font-weight:600}
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--bp-muted)}
+</style>
+</head>
+<body>
+<main>
+<span class="status">Draft design · v5 multi-chain model · supersedes v1–v4</span>
+<h1>On-chain Git</h1>
+<p class="lede">Git semantics on BSV, with the file chain as the spine. Every file is a chain of
+B-0 outputs — its genesis bytes plus diff records, each extending the previous tip, wherever that
+tip lives. Directories are views: inscriptions naming the current <em>tip</em> outpoint of each
+entry. A repository is one such view; editing cascades tip updates up the manifest tree to a root
+that a ref coin names. Any single file resolves by walking only its own chain — never by replaying
+a repository.</p>
+<p class="note">Agreed live between shruggr and 1sat-tester, 2026-09-17. v5 replaces v4's
+single-chain-per-repository model after a granularity review: with one base spine per repo, a file
+has no identity outside its repo, linking to one file means replaying the whole tree, and files
+maintained by other people (the package-management / publisher use case) can't be extended in
+place. v4's entry anchors named file <em>genesis</em>; v5 entries name the current <em>tip</em> and
+edits cascade. The v3 failure was making directory line-patches the content diff — v5 keeps
+standard file hunks as content diffs and uses manifest diffs only to move entry pointers.</p>
+
+<h2 id="taxonomy">Two things exist: outputs and coins</h2>
+<ul>
+<li><strong>B-0 OP_RETURN outputs — all content.</strong> Genesis inscriptions, gib diff records.
+Unspendable, immutable, named by outpoint. Not ordinals; no wallet involvement.
+<strong>Except for genesis (and full-rewrite inscriptions), complete file content is never
+recorded on-chain — it is a state machine.</strong></li>
+<li><strong>1-sat coins — all pointers.</strong> Ref tokens (branches/tags), spendable precisely
+so they can move (spend forward) and be deleted (burn). A token is a signed pointer,
+<strong>never a container</strong>: it names an outpoint rather than holding bytes, which is what
+lets a fork reference existing content without copying it (see <a href="#refs">Refs</a>).</li>
+</ul>
+
+<h2 id="chains">The chain: per-file, foreign bases welcome</h2>
+<p>A file's history is a chain: its genesis output (raw bytes) extended by diff records, each
+record's base being the previous tip <em>of that file</em>. Nothing requires the base to be yours.
+A record can extend anyone's on-chain output — a file in your project, or a public file published
+by a stranger in an unrelated project. Ownership is irrelevant to the mechanism; a diff is a
+diff.</p>
+<ul>
+<li><strong>A directory is a grouping of chain tips.</strong> Directory JSON maps names to tip
+outpoints. Two entries in one directory may belong to entirely different projects — one chain
+rooted in your genesis, another continuing a stranger's publication. Resolution walks each cited
+chain independently.</li>
+<li><strong>The repository is a view, not a container.</strong> It carries no history of its own
+beyond its manifest edits. This is what git can't do: in git a file is only "path within repo at
+snapshot"; in gib the file's chain exists first and the directory just points at it.</li>
+<li><strong>Patchwork worktrees are normal.</strong> One checkout can contain files from many
+ancestries. The <em>entry point</em> (the root the token names) is the checkout's origin; a
+file's foreign chain is raw material, not ancestry.</li>
+</ul>
+
+<h2 id="origin">Origin: selection is authorship</h2>
+<p>The publisher of a directory <em>adopts</em> everything it points at: by naming an outpoint, you
+own the pairing. The txid makes adoption exact and auditable — anyone can verify the directory
+names exactly that output, exactly those bytes. So origin is one hop, never a traversal:
+"the origin of everything this entry point points to" is literally the entity that pointed at
+them. A checkout has one entry point but many ancestries, and that is a feature — package
+management and publisher signatures fall out of the same mechanism, because a dependency is a
+pointer into another chain, exact by construction, and the signer of a chain is its publisher.</p>
+
+<h2 id="genesis">Genesis: an ord-fs upload</h2>
+<p>Genesis is an existing ord-fs directory inscription (B-0; the 1sat-sdk already publishes
+these). Directory JSON maps names to outpoints or <code>_N</code> siblings:</p>
+<pre>// txid_4_0 — root directory of a project
+{
+  "index.html": "_1",
+  "js":  "txid_1",   // subdirectory inscription
+  "css": "txid_2",
+  "favicon.ico": "txid_3"
+}</pre>
+<p>Nothing about this is new; gib borrows ord-fs resolution unchanged. At genesis every entry's
+tip <em>is</em> its genesis — each file output is the head of its own (one-output) chain.</p>
+
+<h2 id="record">The record: one base + one git diff</h2>
+<p>A change is a single B-0 output (working content type <code>application/x-gib</code>):
+a small metadata header (base outpoint; diff ref or inline) and the standard git diff text:</p>
+<pre>record := {
+  base: &lt;outpoint being extended&gt;,   // a file tip, or a directory manifest tip
+  diff: { ref: &lt;outpoint&gt; }          // an existing on-chain diff, or
+      | { inline: &lt;git diff text&gt; }
+}</pre>
+<ul>
+<li><strong>The base is per-file.</strong> Editing <code>js/app.js</code> extends that file's
+current tip outpoint, wherever it lives. Different files in the same commit may extend different
+bases, in different projects.</li>
+<li><strong>Paths in the diff are relative to the base.</strong> One section per file
+(<code>diff --git a/… b/…</code>), hunks standard, <code>index</code> lines as the author's
+content guard (use <code>--full-index</code> so resolvers can verify pre-images).</li>
+<li><strong>Git's format carries structure for free:</strong> new files (<code>new file mode</code>,
+full content inline — the genesis exception), deletions, and renames (<code>rename from/to</code>
+with zero content bytes).</li>
+<li><strong>Directory manifests are files too.</strong> A manifest update is a record whose base
+is the previous manifest's tip and whose diff is an ordinary git diff of the JSON. One mechanism
+for everything.</li>
+</ul>
+
+<h2 id="cascade">The edit cascade</h2>
+<p>Because entries name <em>tips</em>, a file edit produces a new tip that must be recorded where
+it is referenced — upward, all the way to the root the token names:</p>
+<pre>edit js/app.js   → record R  { base: txid_9_2 }              // new file tip: txid_11_0
+update js/       → record M1 { base: js-tip,  diff: manifest JSON hunk }  // "app.js": → txid_11_0
+update root      → record M2 { base: root-tip, diff: manifest JSON hunk } // "js": → M1
+push             → token spends forward citing M2</pre>
+<ul>
+<li><strong>One mechanism all the way up:</strong> the manifest edits are just gib diffs against
+the previous manifest. No special-case "directory changed" operation.</li>
+<li><strong>All references point backwards,</strong> so the whole cascade can fuse into a single
+transaction: output 0 = file record, then each changed manifest above it, topmost manifest cited
+by the ref coin output. Nothing references a later output. (Fee/cost economics of cascades: open.)</li>
+<li><strong>The property this buys:</strong> no child-crawling, ever. Every state is fully
+described by walking <em>down</em> from its root — which is the only direction the chain can
+answer.</li>
+</ul>
+
+<h2 id="resolution">Resolution: read one file without the repo</h2>
+<p>Path lookup is a descent plus a per-file walk: fetch the root manifest (walking its diff chain
+to full JSON if it is one), descend through directory manifests to the entry's tip outpoint, then
+walk <em>that file's</em> chain to any full-content node and apply the hunks above it. Linking to
+one file touches only the chains on its path — the repository as a whole is never replayed.</p>
+<ul>
+<li><strong>Per-file history is native:</strong> <code>log &lt;file&gt;</code> is just that
+file's chain. (In git this is a derived view computed by replaying tree changes; here it is the
+base structure.)</li>
+<li><strong>Complexity is a caching problem.</strong> Cache by outpoint; the transaction cache is
+the packfile.</li>
+</ul>
+
+<h2 id="graph">Graph shape</h2>
+<ul>
+<li><strong>One base per record, always.</strong> Records form trees (per file, per manifest); no
+fan-in nodes.</li>
+<li><strong>Fork = a bare mint.</strong> Branching from someone else's repository is spending
+nothing: mint your own ref token whose pointer names <em>their</em> root outpoint. No bytes copied,
+no diff — a fork is a pointer, which is all a branch ever was. Your first edit cascades upward
+under your token; their token is untouched, and your token named a specific outpoint, so their
+later moves change nothing about yours.</li>
+<li><strong>Branches fall out for free:</strong> two records sharing a base, both first-class.</li>
+<li><strong>Merge at the view level is trivial:</strong> a new root manifest whose entries name
+the tips you want from each side. Reconciling two versions of the <em>same file</em> is one
+authored record whose diff applies to one side's resolved bytes. <code>diff: {ref}</code> keeps
+composition-by-reference available with zero new bytes.</li>
+<li><strong>No conflicts on-chain; errors are loud.</strong> A diff that fails to apply is a bad
+record: resolver errors, publisher ate the fee, graph stays well-formed.</li>
+</ul>
+<div class="rule">
+<strong>Off-chain validation rule (normative):</strong> do not publish what won't apply.
+Validate before inscribing; merge sanity is author-side responsibility.
+</div>
+
+<h2 id="refs">Refs: signed push-drop coins (the only UTXOs)</h2>
+<p>A ref (branch head, tag, release pointer) is a 1-sat coin in the wallet — a signed push-drop
+token via ts-stack's <code>PushDrop</code> template: fields locked in the script, signed by the
+issuer under a BRC-100 protocol key, publisher key recoverable from the token
+(<code>fromIdentityKey</code>). The token is a signed <strong>pointer</strong>, never a container;
+its identity is its spend-chain, and what it names can change underneath it.</p>
+<ul>
+<li><strong>Move</strong> = spend forward as a new signed token; <strong>delete</strong> = burn.
+Names are BRC-100 tags written once (tags can't be mutated in wallet storage — verified — but a
+tag on a moving coin is stable while the coin moves beneath it).</li>
+<li><strong>Two ways to move forward:</strong> cite a diff (the cascade), or inscribe a whole new
+directory and cite <em>that</em> — the branch identity survives, and the accumulated diff pile is
+pruned without the branch changing name or lineage (an orphan/squash move). The rewrite path is
+available, not the primary one.</li>
+<li><strong>Branch vs tag is behavior, not format:</strong> a tag is a ref nobody moves.</li>
+<li><strong>Pin vs follow:</strong> store an outpoint to pin a state; use ORDFS
+<code>:-1</code> on the ref coin to follow the tip.</li>
+<li><strong>Signed releases (Apple-code-signing analogue):</strong> every ref update is signed;
+auto-update = resolve tip, verify signature against issuer identity, apply. Trust anchors on
+deterministic BRC-100 derivation — no PKI. Certificates above this later, if ever.</li>
+<li><strong>Private and never globally searchable</strong>: refs live in wallets; an outpoint
+someone hands you (or the wallet's own tag list) is the only bootstrap.</li>
+</ul>
+
+<h2 id="commit">Commit and push are two acts</h2>
+<p><strong>Commit</strong> publishes data. <strong>Push</strong> moves a pointer. Git fuses
+them locally (commit writes the object <em>and</em> moves the ref); gib separates them so
+that "committed but unpushed" and force-push are expressible.</p>
+<ul>
+<li><strong>Commit</strong> = wallet action(s) (sign+process: fund, sign payment inputs,
+broadcast) creating B-0 record outputs funded by ordinary UTXOs. A file's record set plus the
+manifest cascade can ride one transaction; a push can ride it too. Moving no ref is the default:
+a record no ref cites is gib's dangling object — real, permanent, unreachable.</li>
+<li><strong>Push</strong> = spend the ref coin forward with its fields citing some root outpoint.
+Forward-cite is a fast-forward; <strong>back-cite to an earlier root is a genuine
+force-push</strong> — the branch rewinds, and only the abandoned data is un-deletable.
+Announcing the outpoint onward (overlay/indexer) is further scope, still open.</li>
+<li><strong>Fusion optimization:</strong> file record(s) + manifest cascade + advanced ref coin in
+one transaction; every internal edge points backwards (record → base in an earlier tx; each
+manifest → lower vout; ref → topmost manifest). Git-style atomicity at the cost of not expressing
+unpushed commits.</li>
+<li><strong>Audit trail:</strong> a ref coin's spend chain is an exact, signed history of every
+push to that branch.</li>
+<li><strong>Bootstrap bonus:</strong> listing a tagged ref coin returns its tx blob, which in the
+fused shape contains the commit itself — a client syncing the tip receives the latest change with
+the pointer; the walk begins only when going further back.</li>
+</ul>
+
+<h2 id="init">Init, genesis-as-first-commit, and project identity</h2>
+<ul>
+<li><strong><code>gib init</code> touches nothing on-chain.</strong> Like <code>git init</code>
+it is free, reversible, local-only: create <code>.gib</code>, start with an unborn
+<code>main</code> — git's <code>refs/</code> is literally empty until the first commit, and so
+is gib's.</li>
+<li><strong>The first commit is genesis, not a diff.</strong> The whole folder publishes as an
+ord-fs directory batch (B-0 outputs, possibly several txs — batch shape open, see below).
+The root directory output (<code>&lt;txid&gt;_0</code>) is the genesis commit's ID. The first
+push mints the branch's ref coin pointing at it.</li>
+<li><strong>Branching from an existing repo needs no genesis and no diff:</strong> resolve their
+root outpoint into a folder, mint a token citing it. Local setup is the same table either way.</li>
+<li><strong><code>origin</code> is a defined term: the genesis outpoint</strong> of the entry
+point's chain — the identity of what you adopted, one hop (see <a href="#origin">Origin</a>).
+Git stores no project metadata at all (not even the folder name); its root commit is the de-facto
+identity, and gib makes that explicit.</li>
+<li><strong>Refs mirror git's file layout:</strong> <code>.gib/refs/heads/&lt;name&gt;</code>
+is one line holding the tip's outpoint; <code>HEAD</code> names the standing branch. For
+committed branches the wallet coin is authoritative for the branch tip and the file is a
+rebuildable mirror (the coin ≈ git's remote branch; the file ≈ git's local branch; they may
+legitimately disagree the way <code>main</code> lags <code>origin/main</code>). HEAD — what
+your working tree is based on — is local only; the wallet never knows what you're working on.</li>
+</ul>
+
+<h2 id="cli">CLI &amp; local model (gibsv)</h2>
+<p>Project: <code>code/bsv/gibsv</code>; local state dir <code>.gib</code> (cache, materialized
+worktrees, downloaded history — disposable, rebuildable from refs). Wallet holds only ref coins.</p>
+<h3>The manifest table (.gib)</h3>
+<p>On checkout, gib persists one row per file: <code>path → tip outpoint → content hash</code>.
+All three columns earn their place: the tip outpoint is what a future diff extends (per-file,
+possibly a foreign chain), and the hash is how gib detects edits — worktree hash ≠ manifest hash
+means changed. No mtimes, no stat tricks. The table is, locally, exactly the directory manifests
+as walked: the neighborhood snapshot of where you're standing. Per-entry provenance is transitive
+— each row's chain terminates wherever it terminates.</p>
+<h3>Wallet roles (BRC-100 facts, verified)</h3>
+<ul>
+<li><strong>No get-by-txid.</strong> The wallet cannot hand back arbitrary transaction history;
+gib's <code>.gib</code> tx cache owns downloaded history (the packfile equivalent).</li>
+<li><strong>Tagged outputs return tx blobs.</strong> Wallet list-by-tag yields ref coins
+<em>with</em> their transactions — the wallet is an address book, but only ever for outputs we
+published ourselves; other people's records never pass through our wallet. Discovery of foreign
+history is always walk-from-outpoint.</li>
+<li><strong>The action's sign+process motion IS commit.</strong> One call: fund, sign payment
+inputs, broadcast. There is no wallet-level sign-but-hold; whether gib wants drafts/stash (and
+where they'd live) is open.</li>
+</ul>
+<h3>Git feature map</h3>
+<table>
+<tr><th>git</th><th>gib</th></tr>
+<tr><td><code>commit</code></td><td>publish data: file record(s) + manifest cascade, one wallet action or one fused tx; moves no ref</td></tr>
+<tr><td><code>push</code></td><td>move a pointer: spend the ref coin forward citing a root outpoint; commit+push may fuse into one tx</td></tr>
+<tr><td><code>clone</code>/<code>fetch</code>/<code>checkout</code></td><td>resolve entry point into a folder, write the manifest table (path → outpoint → hash)</td></tr>
+<tr><td><code>status</code></td><td>worktree hash vs manifest-table hash, per file — purely local</td></tr>
+<tr><td><code>log</code></td><td>walk a chain: the root's manifest spine, or any file's own chain</td></tr>
+<tr><td><code>log -- path</code>/<code>show</code></td><td>native: the file's chain, no replay</td></tr>
+<tr><td><code>merge</code></td><td>new manifest citing both sides' tips; same-file reconciliation = one authored record; <code>diff:{ref}</code> for zero-byte composition</td></tr>
+<tr><td><code>rebase</code></td><td>re-author records onto new bases and publish; originals stay forever</td></tr>
+<tr><td><code>revert</code></td><td>no on-chain operation: checkout an older outpoint, or publish a forward diff undoing content</td></tr>
+<tr><td><code>reset</code>/<code>amend</code>/force-push</td><td>force-push = back-cite the ref (real, signed); <code>amend</code> = publish a new record and cite it instead; <code>reset</code> = local files only. Abandoned data stays on-chain forever</td></tr>
+<tr><td><code>fork</code></td><td>mint a token citing someone else's root outpoint — no bytes copied</td></tr>
+<tr><td><code>remote</code></td><td>one global remote already</td></tr>
+<tr><td><code>gc</code>/<code>pack</code></td><td>nothing to compact; the transaction cache is the packfile; history <em>rewrites</em> happen via full-rewrite inscription + ref recite</td></tr>
+</table>
+
+<h2 id="groundwork">Verified groundwork</h2>
+<ul>
+<li>ORDFS serves raw B-0 output bytes: <code>GET /content/&lt;outpoint&gt;</code> plus
+<code>:-1</code> tip semantics (production gateway
+<a href="https://api.1sat.app" target="_blank" rel="noopener noreferrer">api.1sat.app</a>).</li>
+<li>ord-fs machinery in <code>@1sat/actions</code> (<code>ordfs/manifest.ts</code>,
+<code>outputs.ts</code>); server-side <code>resolveDirectoryPath</code> in 1sat-stack (depth 8).
+Genesis publish = <code>buildOrdFsDirOutputs</code> — audit before leaning on it.</li>
+<li>ts-stack PushDrop template: <code>packages/sdk/src/script/templates/PushDrop.ts</code>.</li>
+<li>Live mainnet round-trip through the bitplan wallet/CLI stack:
+<code>ec68da0d…1069_0</code>.</li>
+<li><strong>Spike (2026-09-17, 13 tests vs real git 2.47)</strong> validated the record
+envelope, resolver walk, wrong-base loud failure, caching, and merge-by-reference. It was built
+on the v3 manifest-patching model; its git-integration findings survive (below). The v4 code in
+<code>code/bsv/gibsv</code> (10/10 green) implements the single-spine model — it needs the
+per-file-base + cascade rework to match v5.</li>
+</ul>
+<div class="note"><strong>Git-integration facts that survive the redesign:</strong>
+<code>git apply</code> requires <code>--unidiff-zero</code> for <code>-U0</code> patches or it
+rejects them even when lines match byte-for-byte; patches applied via a temp file in the
+worktree (piping via stdin hangs under execFile); materialize the target file under the name
+the patch declares (<code>+++ b/&lt;name&gt;</code>); a diff meeting a wrong base fails loudly
+via context/index mismatch — which is the validation property we rely on.</div>
+
+<h2 id="open">Open questions</h2>
+<details open>
+<summary>Not yet settled</summary>
+<ul>
+<li><strong>Cascade cost economics:</strong> every content edit writes a file record plus a
+manifest record per level above it. Single fused tx vs multiple; acceptable fee amplification for
+deep trees; whether manifest diffs can ever batch across independent edits.</li>
+<li><strong>Manifest tip vs genesis in diffs:</strong> when extending a foreign file, a resolver
+needs the chain from the cited tip; confirm whether records should ever also cite the file's
+genesis for fast bootstrap.</li>
+<li><strong>Push-drop key derivation</strong> (user-flagged): probably not one reused signing
+key per publish; per-token derived keys imply embedding the issuer's root identity key so
+validators can derive/verify. ProtocolID/keyID convention unset.</li>
+<li><strong>Context-adjacent edits across lenses</strong>: same-file, nearby-but-non-overlapping
+hunks from different authors may fail git apply's context matching though semantically
+compatible. Options: author with reduced context, 3-way apply against the authored-against
+state, or accept loud failure. Undecided.</li>
+<li><strong>Drafts/stash</strong>: the wallet has no sign-but-hold; if gib wants reviewable
+built transactions, decide where they live (wallet, <code>.gib</code> local draft, or no drafts —
+validate hard then one atomic call).</li>
+<li><strong>Push scope</strong>: what announcing an outpoint to an overlay/indexer actually is.</li>
+<li><strong>Output tagging policy</strong>: refs certainly; whether to tag our published records
+while held (wallet as free cache) or keep tags minimal.</li>
+<li>Envelope serialization details (metadata header form) — draft in code.</li>
+<li>Whether reconciled records cite the outpoints whose work they folded (provenance metadata).</li>
+<li>CLI command surface (init/clone/publish/refs) unwritten.</li>
+<li><strong>Genesis batch shape</strong> (flagged 2026-09-17): the first commit is an ord-fs
+directory batch, not a single tx — unresolved complexities in how the batch is laid out
+(tx ordering, <code>_N</code> sibling references across txs, root-outpoint selection as the
+genesis commit's ID, tx-size/fee limits). Discussion deferred; design it before publishing
+real genesis.</li>
+<li>Multi-batch genesis for very large trees — later optimization.</li>
+</ul>
+</details>
+
+<h2 id="scope">Deliberately out of scope</h2>
+<ul>
+<li><strong>Encryption / group membership</strong> — bitplan's envelope belongs above, not
+inside, the record.</li>
+<li><strong>Ownership / update authority</strong> — none at this layer; fully open and public,
+anyone may publish a record on any base.</li>
+<li><strong>Viewer/explorer UX; indexing/discovery</strong> — above this layer.</li>
+</ul>
+
+<footer>On-chain Git · draft plan v5 (multi-chain model) · 1sat-tester (Hermes) + shruggr · 2026-09-17 ·
+supersedes v1–v4 · v4 preserved on-chain at <code>494bc4ec…595e_0</code></footer>
+</main>
+</body>
+</html>

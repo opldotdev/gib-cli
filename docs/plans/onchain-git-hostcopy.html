@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en" data-bitplan-template="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>On-chain Git · draft plan v4</title>
+<style>
+:root{
+  --bp-paper:#faf7ef;--bp-ink:#24221e;--bp-muted:#69645b;--bp-accent:#79563c;
+  --surface:#f1ecdf;--line:#e0d8c6;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bp-paper:#191815;--bp-ink:#e8e4da;--bp-muted:#9a948a;--bp-accent:#c9a06a;
+  --surface:#22201c;--line:#33302a;}
+}
+*{box-sizing:border-box}body{margin:0;background:var(--bp-paper);color:var(--bp-ink);font:15px/1.6 system-ui,sans-serif}
+main{max-width:47rem;margin:auto;padding:32px 20px 64px}
+.lede{color:var(--bp-muted);max-width:58ch}
+h1{font-size:1.6rem;margin:0 0 12px;line-height:1.25}
+h2{margin:42px 0 14px;font-size:1.15rem;border-top:1px solid var(--line);padding-top:22px;scroll-margin-top:24px}
+h3{font-size:1rem;margin:22px 0 8px}
+p{margin:0 0 14px}li{margin-bottom:8px}ul{padding-left:22px}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+code{background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:14px 16px;border-radius:8px;border:1px solid var(--line);margin:0 0 16px}
+.status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--bp-accent);color:var(--bp-accent);margin-bottom:18px}
+.note{border-left:3px solid var(--bp-accent);padding:2px 0 2px 14px;margin:18px 0;color:var(--bp-muted)}
+.rule{border:1px solid var(--bp-accent);border-radius:10px;padding:12px 16px;margin:18px 0}
+a{color:var(--bp-accent);text-underline-offset:4px}
+details{border-top:1px solid var(--line);padding:12px 0}summary{cursor:pointer;font-weight:600}
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--bp-muted)}
+</style>
+</head>
+<body>
+<main>
+<span class="status">Draft design · v4 tree-lens model · supersedes v1–v3</span>
+<h1>On-chain Git</h1>
+<p class="lede">Git semantics on BSV. Content is published once as B-0 OP_RETURN outputs; every
+later change is one unspendable output: a pointer to a previous on-chain root plus a standard git
+diff. Nothing is composed, merged, or rewritten on-chain. Any output in the graph is a complete
+readable state — walk back, materialize, apply diffs. Git checkout, with outpoints as commit IDs.</p>
+<p class="note">Agreed live between shruggr and 1sat-tester, 2026-09-17. v4 replaces the
+v2/v3 directory-JSON-patching model after a worked example showed directory line patches are
+unnecessary: git paths address files, directory entries are anchors. Groundwork verified against
+1sat-stack, ORDFS, ts-stack, and the 1Sat SDK at current head.</p>
+
+<h2 id="taxonomy">Two things exist: outputs and coins</h2>
+<ul>
+<li><strong>B-0 OP_RETURN outputs — all content.</strong> Genesis inscriptions, gib diff
+records. Unspendable, immutable, named by outpoint. Not ordinals; no wallet involvement.
+<strong>Except for genesis, full content is never recorded on-chain — it is a state machine
+only.</strong></li>
+<li><strong>1-sat coins — all pointers.</strong> Ref tokens (branches/tags), spendable precisely
+so they can move (spend forward) and be deleted (burn). See <a href="#refs">Refs</a>.</li>
+</ul>
+
+<h2 id="genesis">Genesis: an ord-fs upload</h2>
+<p>Genesis is an existing ord-fs directory inscription (B-0; the 1sat-sdk already publishes
+these). Directory JSON maps names to outpoints or <code>_N</code> siblings:</p>
+<pre>// txid_4_0 — root directory of a project
+{
+  "index.html": "_1",
+  "js":  "txid_1",   // subdirectory inscription
+  "css": "txid_2",
+  "favicon.ico": "txid_3"
+}</pre>
+<p>Nothing about this is new; gib borrows ord-fs resolution unchanged.</p>
+
+<h2 id="record">The record: one base + one git diff</h2>
+<p>An update is a single B-0 output (working content type <code>application/x-gib</code>):
+a small metadata header (base outpoint; diff ref or inline) and the standard git diff text:</p>
+<pre>record := {
+  base: &lt;root outpoint&gt;,          // e.g. txid_4
+  diff: { ref: &lt;outpoint&gt; }       // an existing on-chain diff, or
+      | { inline: &lt;git diff text&gt; }
+}</pre>
+<ul>
+<li><strong>Paths in the diff are ordinary repo paths</strong> relative to the base root —
+<code>js/app.js</code>. One section per file (<code>diff --git a/… b/…</code>), multi-file
+diffs native, hunks standard, <code>index</code> lines as the author's content guard.</li>
+<li><strong>Structure rides for free.</strong> New files (<code>new file mode</code>, full
+content inline — the genesis exception), deletions, and renames (<code>rename from/to</code>
+with zero content bytes) all come from git's format. The directory JSON is never patched; the
+directory state at a record is base manifest ∪ diff-added ∖ diff-deleted, computed at
+resolution.</li>
+<li><strong>The record's outpoint names the new tree state.</strong> Example: base
+<code>txid_4</code>, hunk to <code>js/app.js</code> → record at <code>txid_5</code>. Basing on
+<code>txid_4</code> forks; basing on <code>txid_5</code> stacks. Refs point wherever readers
+should enter.</li>
+</ul>
+
+<h2 id="resolution">Resolution: the lens</h2>
+<p><code>resolve(P) = apply(diff_P, resolve(base_P))</code> — recurse to genesis; the chain
+stores deltas and pointers, composed state exists only as the answer to "resolve this
+outpoint." Viewer-side work only; nothing composes on-chain.</p>
+<ul>
+<li><strong>Path lookup crosses both addressing layers:</strong> fetch base root, walk the
+manifest chain for the path (<code>js</code> → txid_1 → <code>app.js</code> → outpoint →
+bytes), materialize into a worktree, <code>git apply</code> the record's hunks.</li>
+<li><strong>Directory entries are anchors.</strong> A content change never flips a JSON line;
+the entry identifies the file's genesis, its current bytes come from the hunks above it in the
+chain. Renames move the anchor in the resolved view without touching inscriptions — and because
+<code>git apply</code> operates on resolved bytes, a rename carries any hunks applied earlier
+under the old path. Pointer-swap economics, state-correct semantics.</li>
+<li><strong>File state is addressed (outpoint, path)</strong> — versioning at the tree, like
+git. <code>git log file</code> is a derived view: walk the chain, collect sections touching the
+path. Files have no record chains of their own.</li>
+<li><strong>Complexity is a caching problem.</strong> Cache by (outpoint, path); transaction
+cache is the packfile.</li>
+</ul>
+
+<h2 id="graph">Graph shape</h2>
+<ul>
+<li><strong>One base per record, always.</strong> The graph is a tree; no fan-in nodes.</li>
+<li><strong>Branches fall out for free</strong>: two records sharing a base, both first-class.</li>
+<li><strong>Merge is composition by reference, zero new bytes.</strong> Alice and Bob publish
+against the same base; a third record with <code>base: alice, diff: {ref: bob}</code> applies
+Bob's hunks onto Alice's resolved state. Because hunks address <em>resolved content</em>,
+disjoint-file edits compose cleanly; same-region edits fail loudly at apply time (context
+mismatch) rather than silently picking a winner. When a clean composition is impossible, the
+author publishes an ordinary inline-diff record instead. No central management is assumed —
+competing merge records can coexist; consumers choose which outpoint to follow.</li>
+<li><strong>No conflicts on-chain; errors are loud.</strong> A diff that fails to apply is a
+bad record: resolver errors, publisher ate the fee, graph stays well-formed.</li>
+</ul>
+<div class="rule">
+<strong>Off-chain validation rule (normative):</strong> do not publish what won't apply.
+Validate before inscribing; merge sanity is author-side responsibility.
+</div>
+
+<h2 id="refs">Refs: signed push-drop coins (the only UTXOs)</h2>
+<p>A ref (branch head, tag, release pointer) is a 1-sat coin in the wallet — a signed push-drop
+token via ts-stack's <code>PushDrop</code> template: fields locked in the script, signed by the
+issuer under a BRC-100 protocol key, publisher key recoverable from the token
+(<code>fromIdentityKey</code>).</p>
+<ul>
+<li><strong>Move</strong> = spend forward as a new signed token; <strong>delete</strong> = burn.
+Names are BRC-100 tags written once (tags can't be mutated in wallet storage — verified — but a
+tag on a moving coin is stable while the coin moves beneath it).</li>
+<li><strong>Branch vs tag is behavior, not format:</strong> a tag is a ref nobody moves.</li>
+<li><strong>Pin vs follow:</strong> store an outpoint to pin a state; use ORDFS
+<code>:-1</code> on the ref coin to follow the tip.</li>
+<li><strong>Signed releases (Apple-code-signing analogue):</strong> every ref update is signed;
+auto-update = resolve tip, verify signature against issuer identity, apply. Trust anchors on
+deterministic BRC-100 derivation — no PKI. Certificates above this later, if ever.</li>
+<li><strong>Private and never globally searchable</strong>: refs live in wallets; an outpoint
+someone hands you is the only bootstrap.</li>
+</ul>
+
+<h2 id="cli">CLI &amp; local model (gibsv)</h2>
+<p>Project: <code>code/bsv/gibsv</code>; local state dir <code>.gib</code> (cache, materialized
+worktrees, downloaded history — disposable, rebuildable from refs). Wallet holds only ref coins.</p>
+<h3>Git feature map</h3>
+<table>
+<tr><th>git</th><th>gib</th></tr>
+<tr><td><code>commit</code>/<code>push</code></td><td>one B-0 record output in one tx; outpoint is the ID; broadcast is the push</td></tr>
+<tr><td><code>clone</code>/<code>fetch</code>/<code>checkout</code></td><td>resolve an outpoint to genesis, materialize the worktree</td></tr>
+<tr><td><code>log</code>/<code>show</code>/<code>log -- path</code></td><td>walk the base spine; per-path history is a derived view</td></tr>
+<tr><td><code>status</code></td><td>worktree vs resolved base — purely local</td></tr>
+<tr><td><code>merge</code></td><td>composition-by-reference record, or an inline reconciliation record</td></tr>
+<tr><td><code>rebase</code></td><td>re-author diffs onto a new base and publish; originals stay forever</td></tr>
+<tr><td><code>revert</code></td><td>no on-chain operation: checkout an older outpoint, or publish a forward diff undoing content</td></tr>
+<tr><td><code>reset</code>/<code>amend</code>/force-push</td><td>physically impossible — forward-only</td></tr>
+<tr><td><code>remote</code>/<code>fork</code></td><td>one global remote already</td></tr>
+<tr><td><code>gc</code>/<code>pack</code></td><td>nothing to compact; the transaction cache is the packfile</td></tr>
+</table>
+
+<h2 id="groundwork">Verified groundwork</h2>
+<ul>
+<li>ORDFS serves raw B-0 output bytes: <code>GET /content/&lt;outpoint&gt;</code> plus
+<code>:-1</code> tip semantics (production gateway
+<a href="https://api.1sat.app" target="_blank" rel="noopener noreferrer">api.1sat.app</a>).</li>
+<li>ord-fs machinery in <code>@1sat/actions</code> (<code>ordfs/manifest.ts</code>,
+<code>outputs.ts</code>); server-side <code>resolveDirectoryPath</code> in 1sat-stack (depth 8).
+Genesis publish = <code>buildOrdFsDirOutputs</code> — audit before leaning on it.</li>
+<li>ts-stack PushDrop template: <code>packages/sdk/src/script/templates/PushDrop.ts</code>.</li>
+<li>Live mainnet round-trip through the bitplan wallet/CLI stack:
+<code>ec68da0d…1069_0</code>.</li>
+<li><strong>Spike (2026-09-17, 13 tests vs real git 2.47)</strong> validated the record
+envelope, resolver walk, wrong-base loud failure, caching, and merge-by-reference. It was built
+on the v3 manifest-patching model; its git-integration findings survive (below), its manifest-
+patching design does not.</li>
+</ul>
+<div class="note"><strong>Git-integration facts that survive the redesign:</strong>
+<code>git apply</code> requires <code>--unidiff-zero</code> for <code>-U0</code> patches or it
+rejects them even when lines match byte-for-byte; patches applied via a temp file in the
+worktree (piping via stdin hangs under execFile); materialize the target file under the name
+the patch declares (<code>+++ b/&lt;name&gt;</code>); a diff meeting a wrong base fails loudly
+via context/index mismatch — which is the validation property we rely on.</div>
+
+<h2 id="open">Open questions</h2>
+<details open>
+<summary>Not yet settled</summary>
+<ul>
+<li><strong>Push-drop key derivation</strong> (user-flagged): probably not one reused signing
+key per publish; per-token derived keys imply embedding the issuer's root identity key so
+validators can derive/verify. ProtocolID/keyID convention unset.</li>
+<li><strong>Context-adjacent edits across lenses</strong>: same-file, nearby-but-non-overlapping
+hunks from different authors may fail git apply's context matching though semantically
+compatible. Options: author with reduced context, 3-way apply against the authored-against
+state, or accept loud failure. Undecided.</li>
+<li>Envelope serialization details (metadata header form) — draft in code.</li>
+<li>Whether merged records cite the outpoints whose work they folded (provenance metadata).</li>
+<li>CLI command surface (init/clone/publish/refs) unwritten.</li>
+<li>Multi-batch genesis for very large trees — later optimization.</li>
+</ul>
+</details>
+
+<h2 id="scope">Deliberately out of scope</h2>
+<ul>
+<li><strong>Encryption / group membership</strong> — bitplan's envelope belongs above, not
+inside, the record.</li>
+<li><strong>Ownership / update authority</strong> — none at this layer; fully open and public,
+anyone may publish a record on any base.</li>
+<li><strong>Viewer/explorer UX; indexing/discovery</strong> — above this layer.</li>
+</ul>
+
+<footer>On-chain Git · draft plan v4 (tree-lens model) · 1sat-tester (Hermes) + shruggr · 2026-09-17 ·
+supersedes v1–v3 · local draft, not yet hosted or inscribed</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en" data-bitplan-template="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>ordfs binary formats · dir &amp; patch</title>
+<style>
+:root{--bp-paper:#faf7ef;--bp-ink:#24221e;--bp-muted:#69645b;--bp-accent:#79563c;--surface:#f1ecdf;--line:#e0d8c6;}
+@media(prefers-color-scheme:dark){:root{--bp-paper:#191815;--bp-ink:#e8e4da;--bp-muted:#9a948a;--bp-accent:#c9a06a;--surface:#22201c;--line:#33302a;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bp-paper);color:var(--bp-ink);font:15px/1.6 system-ui,sans-serif}
+main{max-width:47rem;margin:auto;padding:32px 20px 64px}
+.lede{color:var(--bp-muted);max-width:58ch}
+h1{font-size:1.6rem;margin:0 0 12px;line-height:1.25}
+h2{margin:42px 0 14px;font-size:1.15rem;border-top:1px solid var(--line);padding-top:22px}
+p{margin:0 0 14px}li{margin-bottom:8px}ul{padding-left:22px}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+code{background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:14px 16px;border-radius:8px;border:1px solid var(--line);margin:0 0 16px}
+.status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--bp-accent);color:var(--bp-accent);margin-bottom:18px}
+table{border-collapse:collapse;width:100%;font-size:.9em;margin:0 0 16px}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--surface)}
+a{color:var(--bp-accent);text-underline-offset:4px}
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--bp-muted)}
+</style>
+</head>
+<body>
+<main>
+<span class="status">spec · 2026-09-18 · for 1sat-stack, 1sat-sdk, gib</span>
+<h1>ordfs binary formats: <code>ordfs/dir</code> and <code>ordfs/patch</code></h1>
+<p class="lede">Two new content types for the ord-fs family, defined here for gateway
+(1sat-stack/pkg/ordfs), SDK publishers, and any reader. Integers are fixed-width, big-endian
+unless stated; no varints; no padding. All digests are SHA-256.</p>
+
+<h2 id="family">Content type family</h2>
+<table>
+<tr><th>type</th><th>meaning</th><th>status</th></tr>
+<tr><td><code>ord-fs/json</code></td><td>JSON directory manifest</td><td>legacy — readers keep supporting; no longer written</td></tr>
+<tr><td><code>ordfs/dir</code></td><td>binary directory manifest (this doc)</td><td>new</td></tr>
+<tr><td><code>ordfs/patch</code></td><td>vcdiff patch record with base outpoint (this doc)</td><td>new</td></tr>
+<tr><td><code>ordfs/stream</code></td><td>stream continuation chunk</td><td>existing, unchanged</td></tr>
+<tr><td><code>&lt;mime&gt;;stream=ordfs</code></td><td>first chunk of a streamed file</td><td>existing, unchanged</td></tr>
+</table>
+<p>Convention going forward: new types use the non-hyphenated <code>ordfs/</code> prefix.
+Files keep their natural MIME. No gib-namespaced types exist — gib's identity lives in its
+commit-token push-drop fields, not in content types.</p>
+
+<h2 id="dir">ordfs/dir — binary directory manifest</h2>
+<pre>dir :=
+  [1B  version]            0x01
+  [2B  entry count]        uint16
+  [entries × N]            sorted ascending by raw name bytes
+
+entry :=
+  [1B  flags]
+       bit0  KIND      0 = file, 1 = directory
+       bit1  EXEC      executable            (file)
+       bit2  SYMLINK   content = target path (file; bytes are a relative path string)
+       bit3  REFTYPE   0 = same-tx output, 1 = full outpoint
+       bits4–7         MUST be zero; non-zero = invalid manifest
+  [1B  name length]        1..255
+  [NB  name]               raw UTF-8 path COMPONENT; must not contain 0x00 or '/'
+  [target]
+       REFTYPE 0:  [1B vout]                     sibling output in the same tx
+       REFTYPE 1:  [32B txid][4B vout]           exact Bitcoin outpoint bytes
+                                                 (vout little-endian, as in a tx input)</pre>
+<p>Entry size = 3 + name + (1 or 36). A directory is 3 + Σ(entries). Example — root with
+<code>LICENSE</code> from an earlier tx and three same-tx children (sorted: LICENSE,
+README.md, package.json, src):</p>
+<pre>01 0004
+08 07 "LICENSE"    &lt;32B txid&gt; &lt;03000000&gt;
+00 09 "README.md"  01
+00 0c "package.json" 06
+01 03 "src"        0B</pre>
+
+<h3>Invariants (canonical form)</h3>
+<ul>
+<li><strong>Sorted, unique names.</strong> Same logical directory ⇒ byte-identical
+encoding ⇒ stable SHA-256 of the whole manifest. Readers SHOULD verify sortedness.</li>
+<li><strong>Components only.</strong> Full paths resolve by traversing multiple dirs; a
+name never contains '/'.</li>
+<li><strong>Default entry:</strong> same convention as JSON — an entry named
+<code>.</code>, else <code>index.html</code>. No dedicated field.</li>
+<li><strong>≤256 outputs per publishing tx</strong> (one-byte same-tx vout). Writers also
+cap txs by cumulative bytes; large files stream.</li>
+<li><strong>Version byte:</strong> readers reject unknown versions. Any future change to the
+format bumps it.</li>
+<li>No sharding: entry count is capped by uint16; a directory that large is out of scope.</li>
+</ul>
+
+<h2 id="patch">ordfs/patch — record</h2>
+<pre>patch :=
+  [1B  version]            0x00
+  [36B base outpoint]      native Bitcoin outpoint bytes (txid + LE vout)
+  [..  vcdiff delta]       RFC 3284 — standard header (D6 C3 C4 00) + windows</pre>
+<ul>
+<li><strong>Base is any content</strong> — ordinal, B-protocol output, or another
+<code>ordfs/patch</code>. A chain is patches linked by base; the manifest entry names the
+chain tip.</li>
+<li><strong>Resolved bytes = apply(delta, resolve(base))</strong>, recursively to the root
+base (full bytes). The result is a new version of the base file.</li>
+<li><strong>Serving:</strong> resolved content inherits the base's declared content type
+(a patch output itself declares only <code>ordfs/patch</code>).</li>
+<li>The base chain must terminate at a non-patch (or a patch whose base is unreachable is
+unresolvable).</li>
+</ul>
+
+<h2 id="resolve">Gateway behavior (1sat-stack/pkg/ordfs)</h2>
+<ol>
+<li>Resolve outpoint → check inscription content type:
+  <code>ord-fs/json</code> → existing JSON handling;
+  <code>ordfs/dir</code> → binary handling; anything else → existing file/stream handling.</li>
+<li>Parse dir; on any violation (bad version, unsorted/duplicate names, reserved bits,
+name with 0x00 or '/') → 400 invalid directory manifest.</li>
+<li>Match the next path segment against entry names (exact byte compare).
+  REFTYPE 0 → sibling output in the same tx (equivalent of JSON <code>"_N"</code>);
+  REFTYPE 1 → that outpoint.
+  KIND dir + remaining segments → recurse (existing <code>maxDirectoryDepth = 8</code>);
+  KIND file + remaining → 404.</li>
+<li>Directory with no path → default entry (<code>.</code> then <code>index.html</code>),
+else the existing listing/error behavior.</li>
+<li><code>ordfs/patch</code> requested directly → resolve chain, apply vcdiff, serve with
+the base's content type (Range/stream semantics unchanged; a streamed large file's
+<em>resolved</em> bytes are what chunk).</li>
+</ol>
+
+<h2 id="publish">Publishing (1sat-sdk)</h2>
+<ul>
+<li>Directory deploys emit <code>ordfs/dir</code> outputs (replacing <code>ord-fs/json</code>
+writes); manifest cascade = full re-inscribe of touched dirs, one new output per directory,
+parents citing child outpoints.</li>
+<li>gib additionally writes <code>ordfs/patch</code> record outputs; the SDK needs no
+gib-specific logic — a patch is just an output with these bytes and content type.</li>
+<li>Writers MUST emit canonical form (sorted, reserved bits zero, ext count 0).</li>
+</ul>
+
+<footer>ordfs binary formats · dir &amp; patch · 2026-09-18 · consumers: 1sat-stack agent,
+1sat-sdk agent · gib docs: gib-format, gib-token, gib-cli</footer>
+</main>
+</body>
+</html>

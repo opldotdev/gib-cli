@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" data-bitplan-template="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>gib · on-chain format</title>
+<style>
+:root{--bp-paper:#faf7ef;--bp-ink:#24221e;--bp-muted:#69645b;--bp-accent:#79563c;--surface:#f1ecdf;--line:#e0d8c6;}
+@media(prefers-color-scheme:dark){:root{--bp-paper:#191815;--bp-ink:#e8e4da;--bp-muted:#9a948a;--bp-accent:#c9a06a;--surface:#22201c;--line:#33302a;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bp-paper);color:var(--bp-ink);font:15px/1.6 system-ui,sans-serif}
+main{max-width:47rem;margin:auto;padding:32px 20px 64px}
+.lede{color:var(--bp-muted);max-width:58ch}
+h1{font-size:1.6rem;margin:0 0 12px;line-height:1.25}
+h2{margin:42px 0 14px;font-size:1.15rem;border-top:1px solid var(--line);padding-top:22px}
+p{margin:0 0 14px}li{margin-bottom:8px}ul{padding-left:22px}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+code{background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:14px 16px;border-radius:8px;border:1px solid var(--line);margin:0 0 16px}
+.status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--bp-accent);color:var(--bp-accent);margin-bottom:18px}
+table{border-collapse:collapse;width:100%;font-size:.9em;margin:0 0 16px}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--surface)}
+a{color:var(--bp-accent);text-underline-offset:4px}
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--bp-muted)}
+</style>
+</head>
+<body>
+<main>
+<span class="status">gib suite · 1 of 4 — format</span>
+<h1>The gib on-chain format</h1>
+<p class="lede">The on-chain byte formats gib reads and writes. Binary dir and patch
+formats are specified in their own doc: <a href="ordfs-formats.html">ordfs-formats.html</a>.</p>
+
+<h2 id="record">The record</h2>
+<p>A gib diff record is any single output — B protocol or ordinal inscription — holding
+a fixed binary envelope followed by the delta payload:</p>
+<pre>record :=
+  [1B  version]        // format version, starts at 0x00
+  [36B base outpoint]  // 32B txid + 4B LE vout, BSV-native serialization
+  [..  vcdiff delta]   // RFC 3284, replayed against the base's resolved bytes</pre>
+<ul>
+<li><strong>Base is any inscription</strong> — B protocol or ordinal; gib doesn't care which,
+and doesn't require the base to be gib-published.</li>
+<li><strong>A chain is records linked by base.</strong> Genesis = any inscription (a directory,
+a file, even a foreign ordinal); each record extends the previous tip.</li>
+<li><strong>No "replace" type by design:</strong> replacing content isn't extending a base —
+it's a new inscription (empty chain) plus a manifest cascade retargeting the entry.</li>
+<li><strong>No merge-by-reference:</strong> file chains are linear; conflicts are resolved by
+publishing a reconciliation record, and views merge by citing different tips.</li>
+</ul>
+
+<h2 id="codec">Codec: vcdiff only</h2>
+<p>The diff-type registry is removed (decision 2026-09-18). Rationale: every record is
+one file's source→target transition, which is exactly vcdiff's unit — RFC 3284's
+COPY/ADD/RUN cover edit (<em>its</em> purpose), append (~6 bytes instruction overhead
+regardless of file size), and replacement, for text and binary alike, with no
+file-identity fields anywhere (identity is owned by the manifest and the base outpoint).
+Git diffs are multi-file documents by construction — the format we intentionally left
+behind with per-file chains — so "git diff" was always going to be a fake-friend byte.
+A single-value registry is confusion with a byte attached; broad reinterpretation, if
+ever needed, belongs in the version byte.</p>
+
+<h2 id="manifest">The directory</h2>
+<p><code>ordfs/dir</code> binary manifests: one output per directory, entries name the
+current <em>tip</em> of each child's chain, and keeping tips current is what patches do —
+full re-inscribe of each touched directory, parents citing new child outpoints (cascade):</p>
+<pre>// editing js/app.js:
+1. record R   { base: &lt;app.js tip&gt; }                       // new file tip
+2. new js/ dir    { "app.js": → R, ... }              // full re-inscribe
+3. new root dir   { "js": → new js/ outpoint, ... }    // full re-inscribe</pre>
+<p>Every reference points backwards; every state resolves by walking down from its root.</p>
+
+<h2 id="content-type">Content types</h2>
+<p>Records inscribe as <code>ordfs/patch</code>; directories as <code>ordfs/dir</code>
+(binary manifest — full re-inscribe per touched dir; JSON <code>ord-fs/json</code> is
+legacy-read). The record envelope above is the ordfs/patch payload. See
+<a href="ordfs-formats.html">ordfs-formats.html</a> for both. New types use the
+non-hyphenated <code>ordfs/</code> prefix; gib identity lives only in commit-token
+push-drop fields.</p>
+
+<footer>gib suite · format · 2026-09-17 · siblings: token, cli, rationale</footer>
+</main>
+</body>
+</html>
