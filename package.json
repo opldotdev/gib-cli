@@ -1,0 +1,16 @@
+{
+  "name": "gib-cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "postinstall": "rm -rf node_modules/@1sat && mkdir -p node_modules/@1sat && for p in actions client templates types utils wallet; do ln -s ../../../1sat-sdk/packages/$p node_modules/@1sat/$p; done"
+  },
+  "dependencies": {
+    "@bsv/sdk": "2.6.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
