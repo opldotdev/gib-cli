@@ -1,7 +1,5 @@
 # gib open questions (one per turn; answered ones move out)
 
-- [ ] file modes: git tree entries carry exec/symlink marks, manifests don't — manifest
-      field vs verbatim tree objects (BLOCKS byte-exact tree reconstruction)
 - [ ] default-branch designation (git HEAD symref) — no chain home yet
 - [ ] project-manifest convention file: name/filename TBD
 - [ ] wallet label scheme (BRC-100): basket `gib`; tx label push:<sha> on every tx of a
@@ -19,6 +17,9 @@
       not ownership. Note now, solve later
 
 # answered 2026-09-18 → decisions (details in gib-token.html / gib-cli.html / gib-format.html)
+- file modes: SOLVED by ordfs/dir flags byte (EXEC/SYMLINK bits; symlink leaf bytes =
+  target path) — see ordfs-formats.html; content types settled: ordfs/dir, ordfs/patch,
+  ordfs/stream (ord-fs/json legacy read-only); SDK work lands in b-open-io/1sat-sdk
 - repository = origin genesis directory inscription; (origin, branch) is the namespace
 - commit token fields [gib, origin, branch, root, pubkey]; commit head = single final tx,
   git commit object inscribed on the head output; keyID = root outpoint (computable because
