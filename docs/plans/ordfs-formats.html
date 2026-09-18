@@ -102,6 +102,14 @@ chain tip.</li>
 base (full bytes). The result is a new version of the base file.</li>
 <li><strong>Serving:</strong> resolved content inherits the base's declared content type
 (a patch output itself declares only <code>ordfs/patch</code>).</li>
+<li><strong>vcdiff profile (what producers must emit):</strong> RFC 3284 with
+standard header <code>D6 C3 C4 00</code> and <code>Hdr_Indicator = 0</code> —
+default code table, no secondary compression, single window. This is the
+output of the SDK codec (xdelta3 wasm). Decoders SHOULD reject
+<code>VCD_DECOMPRESS</code> deltas or implement fgcomp; a decoder need only
+handle this profile to read all Gib-published patches. Reference decoders
+verified against our output: xdelta3 CLI, <code>@ably/vcdiff-decoder</code>,
+xdelta3-wasm.</li>
 <li>The base chain must terminate at a non-patch (or a patch whose base is unreachable is
 unresolvable).</li>
 </ul>

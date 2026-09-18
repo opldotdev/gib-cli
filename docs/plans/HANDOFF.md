@@ -4,6 +4,24 @@ Date: 2026-09-18. For the agent picking up the SDK/Gib build work.
 Read first: `ROADMAP.md`, `ordfs-formats.html`, `gib-format.html`,
 `gib-token.html`, `gib-cli.html`, `questions.md` (all in this folder).
 
+## STATUS UPDATE (later same day — SDK stream continued)
+
+Steps 1–4 (the whole SDK phase) are DONE on branch `feat/ordfs-dir-patch`
+in code/1sat-sdk, PR open: https://github.com/b-open-io/1sat-sdk/pull/76.
+
+- vcdiff decision: RESOLVED → xdelta3-wasm pair (see below for the
+  findings that drove it). @limrun/xdelta3-wasm encodes (RFC-clean
+  Hdr_Indicator 0, base64-embedded wasm), xdelta3-wasm decodes.
+  @ably/vcdiff-decoder is a dev-dep test validator. Interop proven in
+  test against the xdelta3 CLI reference both directions. ON-CHAIN
+  PROFILE: deltas from our encoder have Hdr_Indicator 0, single
+  window, no secondary compression. We REJECT fgcomp-compressed
+  deltas (clear error); our encoder never emits them.
+- ordfs/patch envelope, dir codec, pushdrop lifecycle module: all
+  exported from @1sat/actions; tsc build clean; dist smoke (dev +
+  production NODE_ENV) passes consuming exactly like gib-cli will.
+- Remaining: step 5, the gib stream itself (WS-C), now active.
+
 ## Repo state right now
 
 ### gib-cli (github.com/opldotdev/gib-cli)
