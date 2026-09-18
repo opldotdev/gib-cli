@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en" data-bitplan-template="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>gib · rationale</title>
+<style>
+:root{--bp-paper:#faf7ef;--bp-ink:#24221e;--bp-muted:#69645b;--bp-accent:#79563c;--surface:#f1ecdf;--line:#e0d8c6;}
+@media(prefers-color-scheme:dark){:root{--bp-paper:#191815;--bp-ink:#e8e4da;--bp-muted:#9a948a;--bp-accent:#c9a06a;--surface:#22201c;--line:#33302a;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bp-paper);color:var(--bp-ink);font:15px/1.6 system-ui,sans-serif}
+main{max-width:47rem;margin:auto;padding:32px 20px 64px}
+.lede{color:var(--bp-muted);max-width:58ch}
+h1{font-size:1.6rem;margin:0 0 12px;line-height:1.25}
+h2{margin:42px 0 14px;font-size:1.15rem;border-top:1px solid var(--line);padding-top:22px}
+p{margin:0 0 14px}li{margin-bottom:8px}ul{padding-left:22px}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+code{background:var(--surface);padding:1px 5px;border-radius:4px}
+.status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--bp-accent);color:var(--bp-accent);margin-bottom:18px}
+.note{border-left:3px solid var(--bp-accent);padding:2px 0 2px 14px;margin:18px 0;color:var(--bp-muted)}
+a{color:var(--bp-accent);text-underline-offset:4px}
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--bp-muted)}
+</style>
+</head>
+<body>
+<main>
+<span class="status">gib suite · 4 of 4 — rationale</span>
+<h1>Why gib is shaped this way</h1>
+<p class="lede">Design record: the tensions that forced each choice, and the dead ends that
+were walked and backtracked. Normative specs live in the sibling docs; nothing here is
+required to implement.</p>
+
+<h2 id="granularity">Repository-first lost to file-first</h2>
+<p>Mimicking git's whole-tree model (v4: one base spine per repository, record = one multi-file
+diff) borrows all of git's machinery cheaply — and inherits its ceiling. In git a file is only
+"path within repo at snapshot"; a file's identity and history exist only inside a repository.
+On-chain, the point is a graph where files point to files across projects maintained by
+different people — package management and publisher signatures from the same substrate. A
+repository-first chain forces the whole tree to resolve and replay to link one file, and gives
+files maintained elsewhere no place to live. The per-file edit work attempted on top of v4
+failed not because per-file was wrong but because the diffs it produced still had a
+repository-shaped home.</p>
+<p>v5 makes the file chain the spine and demotes the repository to a view: a directory
+inscription naming tips. Directories cost nothing extra to version, because a manifest is a
+file and manifest updates are ordinary gib diffs — the cascade is one mechanism, not a second
+system. The cost paid: every edit writes several outputs (open economics question), and no
+dedupe (below).</p>
+
+<h2 id="envelope">Content-addressing at envelope granularity</h2>
+<p>Outpoints <em>are</em> content-addressed — the txid hashes the whole transaction: payload,
+inputs, change, signatures. Immutability is inherited by containment, pointers still can't lie.
+Two prices, same root cause: identical bytes published twice are two outputs (git dedupes by
+construction; gib can only dedupe by choosing to cite an existing output — provenance, not
+prevention), and an output's ID isn't knowable before funding decisions, though it is knowable
+before broadcast once signed. Git's "here's my commit hash before I push" becomes
+"publish-then-cite" — which the fused commit+push transaction absorbs.</p>
+
+<h2 id="hashes">Why content hashes are stored anyway</h2>
+<p>Git's diff format already carries them (<code>index abc..def</code> pre/post images) — full
+<code>--full-index</code> hashes let resolvers verify pre-images before applying, independent
+of the transaction. The local manifest table adds a hash per file for a different job: cheap
+change detection at the worktree. Neither is a lookup service — a hash in hand proves
+membership only in a set you already hold; "is this content already published?" needs an
+indexer, which is deliberately out of scope.</p>
+
+<h2 id="direction">All references point backwards</h2>
+<p>On-chain, newer cites older, full stop: a transaction knows nothing of future children.
+"What's on top of this output?" is unanswerable without having seen everything — git is the
+same (object parents only; GitHub's fork list is a crawler). The cascade turns that limitation
+into a design rule: tips are recorded upward, so every readable state descends from a root a
+token names, and no client ever crawls children. Reverse indexes, when they exist, belong to
+indexers above the layer.</p>
+
+<h2 id="commit-push">Commit and push are separable</h2>
+<p>Git fuses them locally; fusing on-chain (one tx: record + ref advance) buys atomicity but
+can't express "committed, unpushed" or force-push. The model keeps them separate — commit
+publishes data and moves nothing (dangling records are real, permanent, unreachable); push
+moves the pointer, forward or backward. Fusion survives as an optimization because every edge
+inside the fused tx points backwards.</p>
+
+<h2 id="token">Token as pointer, not container</h2>
+<p>For a normal commit the models converge — the fused tx carries the content beside the coin,
+and the coin cites it one output over. They diverge at fork time: a container-token copying
+someone's directory re-inscribes immutable public bytes and mints a duplicate outpoint for
+identical content; a pointer-token forks by naming the existing outpoint, zero bytes. The case
+that decides it is the one git models best — a branch is a hash in a file — so the token
+copies that: identity via spend-chain, content via citation. The container move stays available
+where it means something: a rewrite re-inscribes a fresh directory and recites the pointer,
+pruning a long diff pile under an unchanged branch identity.</p>
+
+<h2 id="dead-ends">Dead ends, recorded</h2>
+<ul>
+<li><strong>v2/v3 — patching directory JSON as the change model.</strong> Diffs of manifest
+line-patches became the repository's history; a worked example showed git paths already
+address files, so directory patches were redundant machinery. (Manifest diffs survive only as
+tip updates — the cascade — never as content diffs.)</li>
+<li><strong>Overnight per-file attempt on v4.</strong> File-level diffs bolted onto a
+single-spine repo graph; correct instinct, wrong substrate.</li>
+<li><strong>"Content is the pointer."</strong> Overreach: refs are not inscriptions; refs are
+coins. Content addresses content; tokens address tips.</li>
+<li><strong>Tag-everything.</strong> Tagging every published output as a wallet cache fails:
+foreign outputs never pass through our wallet. Tags cover what we publish; the rest is
+walk-from-outpoint.</li>
+<li><strong>Merge-by-reference</strong> (<code>diff: {ref}</code>: apply someone else's stored
+diff instead of writing your own). Made sense for repo-shaped changesets; in file chains,
+chains are linear and conflicts need an authored reconciliation anyway. Dropping it freed the
+diff field to become a typed codec registry (git / vcdiff / append), which composition-forbidding
+codecs like VCDIFF require.</li>
+</ul>
+
+<h2 id="tensions">Accepted tensions</h2>
+<ul>
+<li><strong>Snapshot cost:</strong> git's <code>show</code> is instant (snapshots); gib's
+resolve is a chain walk. Caching mitigates; the delta-only chain is the point.</li>
+<li><strong>Fees scale with graph depth</strong> (cascade) where git's cost is flat per commit.</li>
+<li><strong>No modes/symlinks:</strong> directory JSON has nowhere for executable bits or
+symlink flags — an implicit v1 data-format loss.</li>
+<li><strong>Trust at genesis:</strong> genesis outputs carry no self-declared hash; resolvers
+trust the fetch source unless they verify against a cited manifest hash chain.</li>
+</ul>
+
+<h2 id="scope">Deliberately out of scope</h2>
+<ul>
+<li>Encryption/group membership — bitplan's envelope sits above the record, not inside it.</li>
+<li>Ownership/update authority — this layer is fully open: anyone may extend any base.</li>
+<li>Indexing, discovery, explorer UX — above this layer; the wallet is the only directory
+service below it.</li>
+</ul>
+
+<footer>gib suite · rationale · 2026-09-17 · siblings: format, token, cli ·
+history: v1–v3 directory-patch model, v4 tree-lens (archived on-chain at
+<code>494bc4ec…595e_0</code>), v5/suite current</footer>
+</main>
+</body>
+</html>

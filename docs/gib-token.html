@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en" data-bitplan-template="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>gib · push-drop tokens</title>
+<style>
+:root{--bp-paper:#faf7ef;--bp-ink:#24221e;--bp-muted:#69645b;--bp-accent:#79563c;--surface:#f1ecdf;--line:#e0d8c6;}
+@media(prefers-color-scheme:dark){:root{--bp-paper:#191815;--bp-ink:#e8e4da;--bp-muted:#9a948a;--bp-accent:#c9a06a;--surface:#22201c;--line:#33302a;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bp-paper);color:var(--bp-ink);font:15px/1.6 system-ui,sans-serif}
+main{max-width:47rem;margin:auto;padding:32px 20px 64px}
+.lede{color:var(--bp-muted);max-width:58ch}
+h1{font-size:1.6rem;margin:0 0 12px;line-height:1.25}
+h2{margin:42px 0 14px;font-size:1.15rem;border-top:1px solid var(--line);padding-top:22px}
+p{margin:0 0 14px}li{margin-bottom:8px}ul{padding-left:22px}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+code{background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:14px 16px;border-radius:8px;border:1px solid var(--line);margin:0 0 16px}
+.status{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--bp-accent);color:var(--bp-accent);margin-bottom:18px}
+.note{border-left:3px solid var(--bp-accent);padding:2px 0 2px 14px;margin:18px 0;color:var(--bp-muted)}
+a{color:var(--bp-accent);text-underline-offset:4px}
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--bp-muted)}
+</style>
+</head>
+<body>
+<main>
+<span class="status">gib suite · 2 of 4 — token</span>
+<h1>The gib ref token</h1>
+<p class="lede">A signed pointer, never a container. A 1-sat push-drop coin whose fields name one
+on-chain outpoint. Its spend chain is the branch; its signature is the publisher's claim.</p>
+
+<h2 id="what">What it is</h2>
+<ul>
+<li><strong>A ts-stack PushDrop coin</strong> — fields locked in the script, signed by the
+issuer under a BRC-100 protocol key; the publisher's key is recoverable from the token
+(<code>fromIdentityKey</code>).</li>
+<li><strong>Pointer semantics:</strong> the fields hold an outpoint — the root output of a tree
+(directory or directory-record). The token never embeds content; a fork can therefore name
+someone else's existing outpoint and copy zero bytes.</li>
+<li><strong>Origin (defined term):</strong> the genesis outpoint of the ordinal — where this
+token was born. A fact about the coin, one hop, no traversal.</li>
+</ul>
+
+<h2 id="claims">Signing is claiming</h2>
+<p>The token names a root; the root's manifests name entries; entries chain to tips. The
+issuer's signature therefore covers the <em>whole assembled tree</em> — every file, foreign or
+not. Selection is authorship: you adopted exactly what you pointed at, and txid hashes make
+that selection unverifiable-to-change by anyone else. Claims stack: the tree publisher claims
+the composition; file publishers upstream claim their files; each layer verifies on its own.</p>
+
+<h2 id="lifecycle">Lifecycle</h2>
+<ul>
+<li><strong>Mint</strong> = first push (or fork): a transaction creating the coin citing a root
+outpoint — your genesis or someone else's.</li>
+<li><strong>Move</strong> = spend forward as a new signed token citing a new root.
+Fast-forward = cite forward; <strong>force-push = cite an earlier root</strong> — the branch
+rewinds; only the abandoned data is un-deletable.</li>
+<li><strong>Rewrite</strong> = spend forward with a freshly inscribed full directory cited
+instead of a diff chain: prunes accumulated diffs without changing the branch's name or
+lineage. Available, not primary.</li>
+<li><strong>Branch vs tag is behavior, not format:</strong> a tag is a ref nobody moves.</li>
+<li><strong>Two pointers, kept straight:</strong> the coin says where the branch <em>tip</em>
+is; your checkout's HEAD (what you're building on) is local <code>.gib</code> state the wallet
+never sees. Coin ≈ git's remote branch; local ref file ≈ git's local branch; they may
+legitimately disagree.</li>
+</ul>
+
+<h2 id="wallet">Wallet integration (BRC-100 facts, verified)</h2>
+<ul>
+<li><strong>Names are tags written once.</strong> Tags cannot be mutated in wallet storage, but
+a tag on a moving coin stays put while the coin moves beneath it — that's what makes a tag a
+usable branch name.</li>
+<li><strong>List-by-tag returns tx blobs.</strong> The wallet is an address book for outputs
+<em>we</em> published: query our refs → get the coin and the transaction that created it →
+the fused-shape commit rides inside, so tip sync can start with zero network fetches. Foreign
+records never pass through our wallet; discovering foreign history is always walk-from-outpoint.</li>
+<li><strong>No get-by-txid.</strong> The wallet is never a history store; the CLI's local cache
+is.</li>
+<li><strong>Sign+process is the whole motion:</strong> one wallet action funds, signs payment
+inputs, and broadcasts. No sign-but-hold at the wallet level; drafts/stash placement is an open
+question owned by the CLI doc.</li>
+<li><strong>Token payload limits:</strong> fields hold a pointer — small by design. If a payload
+ever exceeded field capacity, pointer-not-container is what saves us.</li>
+</ul>
+
+<h2 id="updates">Updating a token with a commit (fused tx)</h2>
+<pre>tx = {
+  inputs:  [ &lt;current ref coin&gt;, funding... ],
+  outputs: [
+    [0] B-0 record(s):     file record + manifest cascade, each citing a lower vout
+    [1] ref coin (1 sat):  fields cite the topmost manifest output in this tx
+  ]
+}
+// record(s) are v0..; the ref at v1 cites them — nothing points forward.
+// Sat-to-sat mapping is unaffected by vout position since records are 0-sat.</pre>
+<ul>
+<li><strong>Atomicity:</strong> no window where the commit exists but the branch hasn't
+advanced — git's local commit-then-move-ref is one act on-chain.</li>
+<li><strong>Unpushed commits</strong> are expressed by <em>not</em> fusing: commit publishes
+records; push spends the ref separately. Fusion is the optimization, the split is the model.</li>
+<li><strong>Audit:</strong> a coin's spend chain is a signed history of every push.</li>
+</ul>
+
+<h2 id="open">Open</h2>
+<ul>
+<li>Push-drop key derivation: one key vs per-token derived keys (implying the root identity key
+is embedded for validators). ProtocolID/keyID unset.</li>
+<li>Tagging policy: refs certainly; whether to also tag our published records while held (the
+wallet as a free cache) or keep tags minimal.</li>
+<li>Push scope: what announcing an outpoint to an overlay/indexer is.</li>
+</ul>
+
+<footer>gib suite · token · 2026-09-17 · siblings: format, cli, rationale</footer>
+</main>
+</body>
+</html>
