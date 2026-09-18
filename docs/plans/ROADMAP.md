@@ -18,7 +18,7 @@ Repo: b-open-io/1sat-sdk (work lands here directly; opldotdev is a renamed mirro
 same repo). Package: `packages/actions`.
 - `ordfs/dir` encoder: canonical form (sorted names, reserved bits 0) + decoder.
 - `ordfs/patch` encode/apply: envelope [1B version][36B base outpoint][vcdiff];
-  vcdiff codec choice verified under Bun (vcdiff-wasm proven).
+  vcdiff profile = RFC-plain (`xdelta3 -e -n -S none -A` / xdelta3-wasm flags 0).
 - Push-drop lifecycle abstraction lifted from OPNS
   (`src/opns/*`, `apply/opnsRegister.ts`, `utils/completeSignedAction.ts`):
   mint / seal-forward spend / decode / customInstructions at lock time. Gib passes

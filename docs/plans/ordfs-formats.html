@@ -104,6 +104,26 @@ base (full bytes). The result is a new version of the base file.</li>
 (a patch output itself declares only <code>ordfs/patch</code>).</li>
 <li>The base chain must terminate at a non-patch (or a patch whose base is unreachable is
 unresolvable).</li>
+<li><strong>Identical content is never a patch.</strong> Cite the existing outpoint from
+the manifest. An empty delta is invalid.</li>
+</ul>
+
+<h3 id="vcdiff-profile">VCDIFF profile (on-chain contract)</h3>
+<p>The delta is RFC 3284 VCDIFF with a <em>plain</em> header. Writers MUST emit this
+profile; readers MUST reject anything else. Equivalent to
+<code>xdelta3 -e -n -S none -A</code> (and to <code>xdelta3-wasm</code>
+<code>xd3_encode_memory</code> with flags 0).</p>
+<pre>header := D6 C3 C4 00 00
+          magic | ver | Hdr_Indicator = 0</pre>
+<ul>
+<li><strong>Hdr_Indicator = 0:</strong> no <code>VCD_DECOMPRESS</code> (secondary
+compression), no custom code table, no application header.</li>
+<li><strong>Delta_Indicator = 0</strong> on every window (sections uncompressed).</li>
+<li>No xdelta3 Adler-32 window checksum (<code>Win_Indicator</code> bit 0x10 unset).</li>
+<li>xdelta3 CLI default output is <em>not</em> this profile (djw secondary + app
+header). Do not write it. Interop test: encode with the flags above, decode with
+any RFC-plain decoder (<code>xdelta3-wasm</code>, <code>@ably/vcdiff-decoder</code>,
+<code>xdelta3 -d</code>).</li>
 </ul>
 
 <h2 id="resolve">Gateway behavior (1sat-stack/pkg/ordfs)</h2>

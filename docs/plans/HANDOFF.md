@@ -30,7 +30,15 @@ Read first: `ROADMAP.md`, `ordfs-formats.html`, `gib-format.html`,
 - NOT yet exported from `packages/actions/src/index.ts` — add when the
   module set settles.
 
-## In progress: vcdiff codec — DECISION PENDING, then finish or delete
+## Settled: vcdiff codec (`xdelta3-wasm`, RFC-plain profile)
+
+Decision (follow-up branch `feat/ordfs-patch` in 1sat-sdk; spec on
+`docs/vcdiff-profile` in this repo): **`xdelta3-wasm`** encode+decode.
+On-chain profile is RFC 3284 with `Hdr_Indicator = 0` — same bytes as
+`xdelta3 -e -n -S none -A`. `@limrun/xdelta3-wasm` encodes the same
+profile but is encode-only. `vcdiff-wasm` remains REJECT.
+
+## Was in progress: vcdiff codec — DECISION PENDING, then finish or delete
 
 The record codec needs VCDIFF (RFC 3284) deltas that any third party can
 read. Findings from an exhaustive probe of available libraries:
@@ -86,23 +94,23 @@ including xdelta3 CLI interop (skips when CLI absent).
 
 ## Remaining work, in order
 
-1. Settle vcdiff (above). Profile documented in `ordfs-formats.html`.
-2. `ordfs/patch` envelope helpers: `[1B version][36B base outpoint][vcdiff
-   delta]` — encode/decode + the "identical content = direct citation,
-   never an empty patch" rule. Spec: `gib-format.html`.
-3. PushDrop lifecycle abstraction (lift pattern from OPNS usage in
-   prototype branch `archive/prototype` file `token.ts`): mint/seal/decode
-   with protocolID/keyID/customInstructions handling. Gib-specific fields
-   and keyID policy live in gib, NOT the SDK. Fields:
-   `["gib", origin, branch, rootOutpoint, identityPubkey]`
-   (`gib-token.html`).
-4. Export all new modules from `packages/actions` index; run the package
-   lint/build; PR against `master` in b-open-io/1sat-sdk.
-5. Then the gib stream (WS-C) in gib-cli: txstore, resolver,
-   `git-remote-gib`, seal/recovery per `gib-cli.html` + wallet scheme in
-   `questions.md` (basket `gib`, label `push:<sha>`, tags
-   `origin:`/`branch:`, transient partials keyed by createAction
-   reference).
+1. ~~Settle vcdiff.~~ Done on `feat/ordfs-patch` (1sat-sdk) +
+   `docs/vcdiff-profile` (this repo). Profile in `ordfs-formats.html`.
+2. ~~`ordfs/patch` envelope helpers.~~ Done (`patchEncode`/`patchDecode`/
+   `patchFromContent`/`patchApply`; identical-content refused).
+3. ~~PushDrop lifecycle abstraction.~~ Done (`pushDropLock`/`pushDropSeal`/
+   `pushDropDecode`/`pushDropCustomInstructions` in
+   `packages/actions/src/utils/pushdrop.ts`). Gib-specific fields and
+   keyID policy still live in gib, not the SDK.
+4. ~~Export modules.~~ Done from `ordfs/index.ts` + actions `index.ts`.
+   Package build passes. PR against `master` in b-open-io/1sat-sdk still
+   needed (do not use `feat/ordfs-dir-patch`).
+5. Gib stream (WS-C) on branch `feat/gib` — in progress:
+   txstore, resolver (B + ord, dir walk, patch chain), commit-token
+   seal/decode, recovery plan, cascade planner (`planCommit`: genesis
+   + cite-unchanged), `git-remote-gib` capabilities/list/fetch.
+   Still open: wallet publish of planned outputs, push intake from
+   git pack, validation gate, live advertise, pending-upload cache.
 
 ## Environment notes
 
