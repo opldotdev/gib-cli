@@ -1,9 +1,10 @@
 # gib roadmap / workstreams
 
-Four independent workstreams. Specs are authoritative; this file only sequences and
-assigns. Read the spec links before touching code.
+Specs are authoritative; this file only sequences and assigns. Read the spec links
+before touching code. 1sat-stack is handled externally. WS-B + WS-C are ONE stream
+(SDK first, then gib) with one agent; WS-D is independent.
 
-## WS-A — 1sat-stack (Go gateway)
+## WS-A — 1sat-stack (Go gateway) — external agent
 Repo: b-open-io/1sat-stack (`pkg/ordfs`).
 - Serve `ordfs/dir` manifests: parse per spec, path traversal, default entry
   (`.` then `index.html`), existing maxDirectoryDepth=8, 400 on invalid manifest.
@@ -12,7 +13,7 @@ Repo: b-open-io/1sat-stack (`pkg/ordfs`).
 - Keep `ord-fs/json` read support (legacy). Never write new types with the hyphen.
 Spec: `docs/plans/ordfs-formats.html` (self-contained).
 
-## WS-B — 1sat-sdk (TypeScript)
+## WS-B — 1sat-sdk (TypeScript) — folds into one stream with WS-C in practice
 Repo: b-open-io/1sat-sdk (work lands here directly; opldotdev is a renamed mirror —
 same repo). Package: `packages/actions`.
 - `ordfs/dir` encoder: canonical form (sorted names, reserved bits 0) + decoder.
