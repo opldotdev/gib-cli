@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline/promises'
 import { gibInit } from './init.ts'
 import { GIB_FILE, type RepoMeta } from './repo-meta.ts'
 import { defaultGibHome, fileTxStore, txidOf } from './txstore.ts'
-import { connectWallet, DEFAULT_WALLET_URL } from './wallet.ts'
+import { connectWallet, walletUrl } from './wallet.ts'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
@@ -76,7 +76,7 @@ if (cmd === 'init') {
 if (cmd === 'doctor') {
 	const home = defaultGibHome()
 	process.stdout.write(`GIB_HOME=${home}\n`)
-	process.stdout.write(`wallet=${DEFAULT_WALLET_URL}\n`)
+	process.stdout.write(`wallet=${walletUrl()}\n`)
 	try {
 		const w = connectWallet()
 		await w.getPublicKey({ identityKey: true })

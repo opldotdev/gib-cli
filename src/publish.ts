@@ -85,6 +85,28 @@ async function unlockPushDrop(
 	return { txid: done.txid, bytes: new Uint8Array(signedTx.toBinary()) }
 }
 
+/**
+ * Wallet substrates (HTTPWalletJSON) throw the whole request in the error
+ * text, which for a content push is the entire tree as hex; git's packet
+ * line then truncates the message before the reason. Keep call + message.
+ */
+async function walletCall<T>(what: string, run: () => Promise<T>): Promise<T> {
+	try {
+		return await run()
+	} catch (e) {
+		const text = e instanceof Error ? e.message : String(e)
+		if (text.startsWith('{')) {
+			try {
+				const j = JSON.parse(text) as { call?: string; message?: string }
+				if (j.message) throw new Error(`wallet ${j.call ?? what}: ${j.message}`)
+			} catch (inner) {
+				if (inner instanceof Error && inner.message.startsWith('wallet ')) throw inner
+			}
+		}
+		throw new Error(`wallet ${what}: ${text.length > 500 ? `${text.slice(0, 500)}…` : text}`)
+	}
+}
+
 export function walletPublisher(wallet: WalletInterface): Publisher {
 	return {
 		async publishContent(plan, labels) {
@@ -100,12 +122,15 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 				outputDescription: `gib ${o.path ?? `content ${i}`}`.slice(0, 50),
 							}
 			})
-			const r = await wallet.createAction({
-				description: `gib content ${labels[0] ?? ''}`.slice(0, 50),
-				outputs,
-				labels,
-				options: { randomizeOutputs: false, signAndProcess: true },
-			})
+			const r = await walletCall('createAction (content)', () =>
+				wallet.createAction({
+					description: `gib content ${labels[0] ?? ''}`.slice(0, 50),
+					outputs,
+					labels,
+					// signAndProcess defaults to true; setting it explicitly is admin-only in some wallets.
+					options: { randomizeOutputs: false },
+				}),
+			)
 			return rawTxFromResult(r)
 		},
 		async publishHead(opts) {
@@ -137,10 +162,12 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 					},
 				],
 				labels: opts.labels,
-				options: { randomizeOutputs: false, signAndProcess: !opts.spend },
+				options: opts.spend
+					? { randomizeOutputs: false, signAndProcess: false }
+					: { randomizeOutputs: false },
 			}
 			stampManagedOutputIds(args)
-			const r = await wallet.createAction(args)
+			const r = await walletCall('createAction (head)', () => wallet.createAction(args))
 			if (r.txid) return rawTxFromResult(r)
 			if (!opts.spend) throw new Error('unexpected createAction response for commit head')
 			return unlockPushDrop(
@@ -152,7 +179,8 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			)
 		},
 		async burnHead(opts) {
-			const r = await wallet.createAction({
+			const r = await walletCall('createAction (burn)', () =>
+				wallet.createAction({
 				description: 'gib burn ref',
 				inputBEEF: opts.beef,
 				inputs: [
@@ -164,7 +192,8 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 				],
 				labels: opts.labels,
 				options: { signAndProcess: false },
-			})
+				}),
+			)
 			return unlockPushDrop(wallet, opts.keyID, opts.outpoint, opts.beef, r)
 		},
 	}
