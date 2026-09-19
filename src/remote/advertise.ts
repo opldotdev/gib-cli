@@ -29,7 +29,7 @@ export async function advertise(
 		includeTags: true,
 		limit: 10000,
 	})
-	const refs: Array<{ sha: string; name: string }> = []
+	const refs: Array<{ sha: string; name: string; root: string }> = []
 	for (const o of listed.outputs ?? []) {
 		if (!o.lockingScript) continue
 		let token: ReturnType<typeof decodeCommitToken>

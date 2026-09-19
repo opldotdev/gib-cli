@@ -1,11 +1,11 @@
 import {
 	completeSignedAction,
 	stampManagedOutputIds,
+	unlockByScript,
 } from '@1sat/actions'
 import {
 	type CreateActionArgs,
 	type CreateActionResult,
-	PushDrop,
 	Transaction,
 	type WalletInterface,
 } from '@bsv/sdk'
@@ -65,18 +65,16 @@ async function unlockPushDrop(
 			const input = tx.inputs[idx]
 			const src = input.sourceTransaction?.outputs[input.sourceOutputIndex]
 			if (!src) throw new Error('token input source missing')
-			const script = await new PushDrop(wallet)
-				.unlock(
-					GIB_PROTOCOL,
-					keyID,
-					'anyone',
-					'all',
-					false,
-					src.satoshis ?? 1,
-					src.lockingScript,
-				)
-				.sign(tx, idx)
-			return { [idx]: { unlockingScript: script.toHex() } }
+			const r = await unlockByScript(
+				wallet,
+				tx,
+				idx,
+				src.lockingScript,
+				src.satoshis ?? 1,
+				{ protocolID: GIB_PROTOCOL, keyID, counterparty: 'anyone' },
+			)
+			if ('error' in r) throw new Error(`unlock head: ${r.error}`)
+			return { [idx]: { unlockingScript: r.unlockingScript } }
 		},
 		{ acceptDelayedBroadcast: false },
 	)

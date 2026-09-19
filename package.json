@@ -14,9 +14,9 @@
 		"git-remote-gib": "bun run src/git-remote-gib.ts"
 	},
 	"dependencies": {
-		"@1sat/actions": "file:vendor/1sat-actions-0.0.221-feat-ordfs-patch.tgz",
+		"@1sat/actions": "0.0.224",
 		"@1sat/client": "^0.0.55",
-		"@1sat/templates": "^0.0.37",
+		"@1sat/templates": "^0.0.38",
 		"@bsv/sdk": "^2.6.0",
 		"xdelta3-wasm": "^1.0.0"
 	},

@@ -1,4 +1,5 @@
-import { LockingScript, OP, PushDrop, Script, Utils } from '@bsv/sdk'
+import { pushDropDecode } from '@1sat/actions'
+import { LockingScript, OP, Script, Utils } from '@bsv/sdk'
 
 export const GIB_PROTOCOL: [0 | 1 | 2, string] = [1, 'gib branch']
 export const GIB_BASKET = 'gib'
@@ -51,7 +52,7 @@ export function decodeCommitToken(lockingScript: LockingScript | string): Commit
 		typeof lockingScript === 'string'
 			? LockingScript.fromHex(lockingScript)
 			: lockingScript
-	const { fields } = PushDrop.decode(prefixBeforeOrd(script))
+	const { fields } = pushDropDecode(prefixBeforeOrd(script))
 	const str = (i: number) => {
 		const f = fields[i]
 		if (!f) throw new Error(`commit token missing field ${i}`)
