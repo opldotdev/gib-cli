@@ -23,7 +23,8 @@ import {
 	decodeCommitToken,
 	GIB_BASKET,
 	originTag,
-	pushLabel,
+	LABEL_DELETE,
+	LABEL_PUSH,
 } from './token.ts'
 import type { TxStore } from './txstore.ts'
 
@@ -69,7 +70,7 @@ export async function pushLine(opts: {
 			prevRoot: prev ? parseOutpoint(prev.root) : undefined,
 			store: prev ? opts.store : undefined,
 		})
-		const labels = [pushLabel(sha)]
+		const labels = [LABEL_PUSH]
 		const scratch = await mkdtemp(join(tmpdir(), 'gib-val-'))
 		const preview = previewContentStore(plan, opts.store)
 		await validateRoot(preview.store, preview.root, commit, scratch)
@@ -78,7 +79,7 @@ export async function pushLine(opts: {
 		const resumed = pending?.find((t) => t.phase === 'content')
 		let content = resumed
 			? { txid: resumed.txid, bytes: resumed.bytes }
-			: await opts.publisher.publishContent(plan, labels)
+			: await opts.publisher.publishContent(plan, labels, sha)
 		await opts.store.put(content.txid, content.bytes)
 		await savePending(
 			sha,
@@ -99,8 +100,9 @@ export async function pushLine(opts: {
 		const head = await opts.publisher.publishHead({
 			token,
 			commitBytes: commit,
+			sha,
 			labels,
-			tags: headTags(origin, branch),
+			tags: headTags(origin, branch, sha),
 			spend,
 		})
 		await opts.store.put(head.txid, head.bytes)
@@ -143,7 +145,7 @@ async function burnRef(
 	const spend = await loadSpendById(opts.wallet, prev.id)
 	await opts.publisher.burnHead({
 		...spend,
-		labels: [pushLabel('delete')],
+		labels: [LABEL_DELETE],
 	})
 	return { ok: true, dst, origin: opts.origin, sha: '0000000000000000000000000000000000000000' }
 }

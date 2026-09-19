@@ -16,7 +16,9 @@ import {
 	GIB_BASKET,
 	GIB_PROTOCOL,
 	branchTag,
+	commitTag,
 	originTag,
+	pushDescription,
 	type CommitToken,
 } from './token.ts'
 
@@ -29,10 +31,11 @@ export type SpendHead = {
 }
 
 export type Publisher = {
-	publishContent(plan: CommitPlan, labels: string[]): Promise<PublishedTx>
+	publishContent(plan: CommitPlan, labels: string[], sha: string): Promise<PublishedTx>
 	publishHead(opts: {
 		token: CommitToken
 		commitBytes: Uint8Array
+		sha: string
 		labels: string[]
 		tags: string[]
 		spend?: SpendHead
@@ -109,7 +112,7 @@ async function walletCall<T>(what: string, run: () => Promise<T>): Promise<T> {
 
 export function walletPublisher(wallet: WalletInterface): Publisher {
 	return {
-		async publishContent(plan, labels) {
+		async publishContent(plan, labels, sha) {
 			const outputs = plan.outputs.map((o, i) => {
 				const script = bLockingScript(o.contentType, o.bytes)
 				if (!isProvablyUnspendable(script)) {
@@ -124,7 +127,7 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			})
 			const r = await walletCall('createAction (content)', () =>
 				wallet.createAction({
-					description: `gib content ${labels[0] ?? ''}`.slice(0, 50),
+					description: pushDescription('content', sha),
 					outputs,
 					labels,
 					// signAndProcess defaults to true; setting it explicitly is admin-only in some wallets.
@@ -140,7 +143,7 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			const pd = await sealCommitLock(wallet, opts.token)
 			const locking = appendOrdEnvelope(pd, GIT_COMMIT_TYPE, opts.commitBytes)
 			const args: CreateActionArgs = {
-				description: `gib head ${opts.token.branch}`.slice(0, 50),
+				description: pushDescription('head', opts.sha),
 				...(opts.spend ? { inputBEEF: opts.spend.beef } : {}),
 				inputs: opts.spend
 					? [
@@ -199,6 +202,6 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 	}
 }
 
-export function headTags(origin: string, branch: string): string[] {
-	return [originTag(origin), branchTag(branch)]
+export function headTags(origin: string, branch: string, sha: string): string[] {
+	return [originTag(origin), branchTag(branch), commitTag(sha)]
 }

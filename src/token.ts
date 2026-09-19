@@ -24,8 +24,22 @@ export function branchTag(branch: string): string {
 	return `branch:${branch}`
 }
 
-export function pushLabel(sha: string): string {
-	return `push:${sha}`
+/**
+ * Action labels are a fixed vocabulary: BRC-100 wallets gate each distinct
+ * label string as its own permission (`action label <label>`), so a
+ * per-commit label would prompt on every push. The commit sha goes in a
+ * tag on the head output (basketed, so tags exist) and in the description.
+ */
+export const LABEL_PUSH = 'gib push'
+export const LABEL_DELETE = 'gib delete'
+
+export function commitTag(sha: string): string {
+	return `commit:${sha}`
+}
+
+/** Action description carrying the sha, ≤50 chars as BRC-100 requires. */
+export function pushDescription(kind: 'content' | 'head', sha: string): string {
+	return `gib ${kind} ${sha}`.slice(0, 50)
 }
 
 function prefixBeforeOrd(script: Script): Script {

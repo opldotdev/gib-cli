@@ -1,11 +1,12 @@
 import type { WalletInterface } from '@bsv/sdk'
-import { pushLabel } from './token.ts'
+import { LABEL_PUSH } from './token.ts'
 import type { TxStore } from './txstore.ts'
 
 export type PushAction = {
 	txid?: string
 	status?: string
 	reference?: string
+	description?: string
 }
 
 export type RecoveryPlan =
@@ -20,11 +21,15 @@ export async function recoverPush(
 	sha: string,
 ): Promise<RecoveryPlan[]> {
 	if (typeof wallet.listActions !== 'function') return []
+	// One fixed label for every push; the sha is in the action description.
 	const listed = await wallet.listActions({
-		labels: [pushLabel(sha)],
+		labels: [LABEL_PUSH],
 		labelQueryMode: 'any',
+		limit: 1000,
 	})
-	const actions = (listed.actions ?? []) as PushAction[]
+	const actions = ((listed.actions ?? []) as PushAction[]).filter((a) =>
+		(a.description ?? '').includes(sha),
+	)
 	const plans: RecoveryPlan[] = []
 	for (const a of actions) {
 		if (a.txid) {

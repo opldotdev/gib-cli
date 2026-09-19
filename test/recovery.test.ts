@@ -11,7 +11,7 @@ describe('recovery', () => {
 		await store.put(txid, bytes)
 		const wallet = {
 			async listActions() {
-				return { actions: [{ txid, status: 'completed' }] }
+				return { actions: [{ txid, status: 'completed', description: 'gib content deadbeef' }] }
 			},
 		} as unknown as WalletInterface
 		expect(await recoverPush(wallet, store, 'deadbeef')).toEqual([
@@ -23,7 +23,7 @@ describe('recovery', () => {
 		const store = memStore()
 		const wallet = {
 			async listActions() {
-				return { actions: [{ reference: 'abc', status: 'unsigned' }] }
+				return { actions: [{ reference: 'abc', status: 'unsigned', description: 'gib head deadbeef' }] }
 			},
 		} as unknown as WalletInterface
 		expect(await recoverPush(wallet, store, 'deadbeef')).toEqual([
