@@ -64,7 +64,8 @@ entry :=
   [target]
        REFTYPE 0:  [1B vout]                     sibling output in the same tx
        REFTYPE 1:  [32B txid][4B vout]           exact Bitcoin outpoint bytes
-                                                 (vout little-endian, as in a tx input)</pre>
+                                                  (txid internal/LE byte order,
+                                                  vout little-endian, as in a tx input)</pre>
 <p>Entry size = 3 + name + (1 or 36). A directory is 3 + Σ(entries). Example — root with
 <code>LICENSE</code> from an earlier tx and three same-tx children (sorted: LICENSE,
 README.md, package.json, src):</p>
@@ -92,7 +93,7 @@ format bumps it.</li>
 <h2 id="patch">ordfs/patch — record</h2>
 <pre>patch :=
   [1B  version]            0x00
-  [36B base outpoint]      native Bitcoin outpoint bytes (txid + LE vout)
+  [36B base outpoint]      native Bitcoin outpoint (internal-order txid + LE vout)
   [..  vcdiff delta]       RFC 3284 — standard header (D6 C3 C4 00) + windows</pre>
 <ul>
 <li><strong>Base is any content</strong> — ordinal, B-protocol output, or another
