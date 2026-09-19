@@ -8,6 +8,7 @@ import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
 import { advertise, originFromUrl } from './advertise.ts'
 import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
+import { commitParents, importHistory } from './history.ts'
 import type { TxStore } from '../txstore.ts'
 
 export type HelperIo = {
@@ -71,7 +72,7 @@ export async function runHelper(opts: {
 				})
 				const o = listed.outputs?.[0]
 				if (!o) throw new Error(`no token for ${hit.name}`)
-				await importCommit(opts.store, opts.gitDir, o.outpoint.replace('.', '_'))
+				await importHistory(opts.store, opts.gitDir, o.outpoint.replace('.', '_'))
 			}
 			opts.io.write('\n')
 			continue
@@ -177,7 +178,7 @@ export async function importCommit(
 	store: TxStore,
 	gitDir: string,
 	headOutpoint: string,
-): Promise<{ commit: string; tree: string }> {
+): Promise<{ commit: string; tree: string; parents: string[] }> {
 	const op = parseOutpoint(headOutpoint)
 	const tx = await loadTx(store, op.txid)
 	const out = tx.outputs[op.vout]
@@ -188,5 +189,6 @@ export async function importCommit(
 	const root = parseOutpoint(token.root)
 	await resolveOutpoint(store, root)
 	const files = await collectTree(store, root)
-	return materializeGit(gitDir, files, payload.bytes)
+	const r = await materializeGit(gitDir, files, payload.bytes)
+	return { ...r, parents: commitParents(payload.bytes) }
 }

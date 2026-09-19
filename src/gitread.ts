@@ -76,6 +76,7 @@ export async function filesAtCommit(gitDir: string, sha: string): Promise<Incomi
 }
 
 function guessType(path: string): string {
+	if (path === '.gib' || path.endsWith('/.gib')) return 'application/json'
 	if (path.endsWith('.md')) return 'text/markdown'
 	if (path.endsWith('.html')) return 'text/html'
 	if (path.endsWith('.json')) return 'application/json'
