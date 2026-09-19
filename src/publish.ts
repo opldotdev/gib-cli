@@ -93,7 +93,8 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			const outputs = plan.outputs.map((o, i) => ({
 				lockingScript: bLockingScript(o.contentType, o.bytes).toHex(),
 				satoshis: 0,
-				outputDescription: o.path ?? `gib content ${i}`,
+				// BRC-100 wallets require 5-50 chars here; paths like "/" are shorter.
+				outputDescription: `gib ${o.path ?? `content ${i}`}`.slice(0, 50),
 			}))
 			const r = await wallet.createAction({
 				description: `gib content ${labels[0] ?? ''}`.slice(0, 50),

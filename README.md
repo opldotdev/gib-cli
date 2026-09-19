@@ -13,7 +13,19 @@ remote helper. Git stays git — only push/fetch touch the chain.
   design. `gib-status.html` — what was proven on mainnet (full txids inside).
 - `docs/plans/questions.md` — open items vs answered decisions.
 
-**This branch is docs-only.** The working tree is greenfield: no implementation yet.
+**Use it:**
+
+```bash
+bun install
+ln -s "$PWD/src/git-remote-gib.ts" ~/.local/bin/git-remote-gib   # git finds helpers on PATH
+gib init          # in your project: writes .gib, adds remote gib://new (runs git init if needed)
+git push origin main   # genesis: mints the repo; the remote is repointed to gib://<origin>
+```
+
+Needs a BRC-100 wallet on `http://127.0.0.1:3321` (`1sat serve wallet-api`) and its
+monitor running (`1sat serve monitor`) so delayed broadcasts go out.
+
+**History.** The working tree is greenfield: no implementation yet.
 The first prototype (clone/commit/push proven end-to-end on mainnet, wallet API,
 push-drop token chain) lives on branch **`archive/prototype`**. It uses a superseded
 model (full-tree republish, `.gib` project state, ORDFS content reads, pre-final token

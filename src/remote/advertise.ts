@@ -26,6 +26,7 @@ export async function advertise(
 		tags: [originTag(origin)],
 		tagQueryMode: 'all',
 		include: 'locking scripts',
+		includeTags: true,
 		limit: 10000,
 	})
 	const refs: Array<{ sha: string; name: string }> = []

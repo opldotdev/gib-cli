@@ -5,7 +5,7 @@ import { loadTx, resolveOutpoint } from '../resolver.ts'
 import { collectTree, materializeGit } from '../tree.ts'
 import { decodeCommitToken } from '../token.ts'
 import { pushLine } from '../push.ts'
-import { walletPublisher } from '../publish.ts'
+import { type Publisher, walletPublisher } from '../publish.ts'
 import { advertise, originFromUrl } from './advertise.ts'
 import type { TxStore } from '../txstore.ts'
 
@@ -18,13 +18,20 @@ export { advertise, originFromUrl }
 
 export async function runHelper(opts: {
 	url: string
+	/** Remote name git invoked us with; lets a genesis push rewrite its URL. */
+	remoteName?: string
 	store: TxStore
 	wallet?: WalletInterface
+	/** Overrides the wallet-backed publisher (tests). */
+	publisher?: Publisher
 	gitDir: string
 	io: HelperIo
 	home?: string
+	/** Where progress lines go; defaults to stderr, which git relays to the user. */
+	log?: (s: string) => void
 }): Promise<void> {
-	const origin = originFromUrl(opts.url)
+	let origin = originFromUrl(opts.url)
+	const log = opts.log ?? ((s: string) => process.stderr.write(s))
 	for (;;) {
 		const line = await opts.io.read()
 		if (line === null) return
@@ -76,7 +83,7 @@ export async function runHelper(opts: {
 				opts.io.write('\n')
 				continue
 			}
-			const publisher = walletPublisher(opts.wallet)
+			const publisher = opts.publisher ?? walletPublisher(opts.wallet)
 			for (const p of pushes) {
 				const r = await pushLine({
 					line: p,
@@ -89,12 +96,40 @@ export async function runHelper(opts: {
 				})
 				if (r.ok) opts.io.write(`ok ${r.dst}\n`)
 				else opts.io.write(`error ${r.dst} ${r.error}\n`)
+				if (r.ok && isNewOrigin(origin) && r.origin && !isNewOrigin(r.origin)) {
+					// Genesis: the repository now has an identity. Later refs in
+					// this batch join it, and the remote is repointed so the next
+					// push does not mint a second repository.
+					origin = r.origin
+					const url = `gib://${r.origin}`
+					log(`gib: minted repository ${url}\n`)
+					if (opts.remoteName) {
+						const set = await setRemoteUrl(opts.gitDir, opts.remoteName, url)
+						log(
+							set
+								? `gib: remote '${opts.remoteName}' now points at ${url}\n`
+								: `gib: could not update remote '${opts.remoteName}'; run: git remote set-url ${opts.remoteName} ${url}\n`,
+						)
+					} else {
+						log(`gib: add it as a remote: git remote add origin ${url}\n`)
+					}
+				}
 			}
 			opts.io.write('\n')
 			continue
 		}
 		if (cmd === '') continue
 	}
+}
+
+const isNewOrigin = (o: string) => o === '' || o === 'new'
+
+async function setRemoteUrl(gitDir: string, remote: string, url: string): Promise<boolean> {
+	const proc = Bun.spawn(['git', '--git-dir', gitDir, 'remote', 'set-url', remote, url], {
+		stdout: 'pipe',
+		stderr: 'pipe',
+	})
+	return (await proc.exited) === 0
 }
 
 async function readUntilBlank(io: HelperIo): Promise<string[]> {

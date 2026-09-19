@@ -5,7 +5,7 @@
     "": {
       "name": "gib-cli",
       "dependencies": {
-        "@1sat/actions": "^0.0.221",
+        "@1sat/actions": "file:vendor/1sat-actions-0.0.221-feat-ordfs-patch.tgz",
         "@1sat/client": "^0.0.55",
         "@1sat/templates": "^0.0.37",
         "@bsv/sdk": "^2.6.0",
@@ -18,7 +18,7 @@
     },
   },
   "packages": {
-    "@1sat/actions": ["@1sat/actions@0.0.221", "", { "dependencies": { "@1sat/client": "0.0.55", "@1sat/templates": "0.0.37", "@1sat/types": "0.0.48", "@1sat/utils": "0.0.38", "@1sat/wallet": "0.0.110", "@bsv/message-box-client": "^2.5.0" }, "peerDependencies": { "@bsv/sdk": "^2.6.0" } }, "sha512-HsmUVJbBtl1ZxUOLDNi4hzTQeQY08crEBso5OSeVUrug5jKD9EzeAvj27UD3Yu2kmzIki+zXXnqXm6+/sp3D0A=="],
+    "@1sat/actions": ["@1sat/actions@vendor/1sat-actions-0.0.221-feat-ordfs-patch.tgz", { "dependencies": { "@1sat/client": "0.0.55", "@1sat/templates": "0.0.37", "@1sat/types": "0.0.48", "@1sat/utils": "0.0.38", "@1sat/wallet": "0.0.110", "@bsv/message-box-client": "^2.5.0", "xdelta3-wasm": "^1.0.0" }, "peerDependencies": { "@bsv/sdk": "^2.6.0" } }, "sha512-YSgjforQXlkxcFHTKS0usMCKtg3jxcaE16xuTo1wqZ+l6gWR+n2gu9STuKTTK+3CcWhSEWjk9QG1VLAg+7Ilrg=="],
 
     "@1sat/client": ["@1sat/client@0.0.55", "", { "dependencies": { "@1sat/types": "0.0.48", "@bsv/wallet-toolbox-client": "npm:@bopen-io/wallet-toolbox-client@2.6.2-brc153.5" }, "peerDependencies": { "@bsv/sdk": "^2.6.0" } }, "sha512-7qVsWPZLRoH2fZv8PIUUQIk0euFO4BKIjLfxAIFJz87ARzOgQ3lyeXYOanP9oTJwpH/GY8PuahNKQVy8r/KuYQ=="],
 
