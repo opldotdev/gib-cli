@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { BeefClient } from '@1sat/client'
 import { Transaction } from '@bsv/sdk'
 import { normalizeTxid } from './outpoint.ts'
 
@@ -18,11 +19,13 @@ export type FetchRawTx = (txid: string) => Promise<Uint8Array | undefined>
 export function defaultFetchRawTx(
 	baseUrl = process.env.GIB_BEEF_URL ?? 'https://api.1sat.app',
 ): FetchRawTx {
+	const client = new BeefClient(baseUrl)
 	return async (txid) => {
-		const res = await fetch(`${baseUrl.replace(/\/$/, '')}/1sat/beef/${txid}/tx`)
-		if (res.status === 404) return undefined
-		if (!res.ok) throw new Error(`beef fetch ${txid}: ${res.status}`)
-		return new Uint8Array(await res.arrayBuffer())
+		try {
+			return await client.getRawTx(txid)
+		} catch {
+			return undefined
+		}
 	}
 }
 

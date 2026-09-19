@@ -13,7 +13,7 @@ export async function sealCommitLock(
 	token: CommitToken,
 ) {
 	return new PushDrop(wallet as WalletInterface).lock(
-		commitTokenFields(token),
+		[...commitTokenFields(token)],
 		GIB_PROTOCOL,
 		gibKeyId(token.root),
 		'anyone',

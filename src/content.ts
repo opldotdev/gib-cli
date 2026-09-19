@@ -1,6 +1,5 @@
+import { B_PREFIX } from '@1sat/templates'
 import { LockingScript, OP, Script, Utils } from '@bsv/sdk'
-
-export const B_PREFIX = '19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut'
 
 export type Payload = {
 	contentType: string

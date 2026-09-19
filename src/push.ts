@@ -10,7 +10,7 @@ import {
 	parsePushLine,
 	revParse,
 } from './gitread.ts'
-import { idTagFromTags } from './ids.ts'
+import { loadBasketOutputBeef } from '@1sat/actions'
 import { formatOutpoint, parseOutpoint } from './outpoint.ts'
 import { clearPending, loadPending, savePending } from './pending.ts'
 import { previewContentStore } from './preview.ts'
@@ -96,9 +96,6 @@ export async function pushLine(opts: {
 			identityPubkey: publicKey,
 		}
 		const spend = prev ? await loadSpendById(opts.wallet, prev.id) : undefined
-		if (prev && !spend) {
-			throw new Error(`cannot spend previous head ${prev.outpoint}: missing id/BEEF/CI`)
-		}
 		const head = await opts.publisher.publishHead({
 			token,
 			commitBytes: commit,
@@ -144,11 +141,8 @@ async function burnRef(
 	const prev = await currentToken(opts, branch)
 	if (!prev) return { ok: false, dst, error: 'no such ref' }
 	const spend = await loadSpendById(opts.wallet, prev.id)
-	if (!spend) return { ok: false, dst, error: 'token not in wallet' }
 	await opts.publisher.burnHead({
-		outpoint: spend.outpoint,
-		beef: spend.beef,
-		keyID: spend.keyID,
+		...spend,
 		labels: [pushLabel('delete')],
 	})
 	return { ok: true, dst, origin: opts.origin, sha: '0000000000000000000000000000000000000000' }
@@ -170,35 +164,26 @@ async function currentToken(
 	})
 	const o = listed.outputs?.[0]
 	if (!o?.lockingScript) return undefined
-	const id = idTagFromTags(o.tags)
+	const id = o.tags?.find((t) => t.startsWith('id:'))
 	if (!id) throw new Error('commit token missing id: tag')
 	const t = decodeCommitToken(o.lockingScript)
-	return { origin: t.origin, root: t.root, outpoint: o.outpoint, id: id.slice(3) }
+	return { origin: t.origin, root: t.root, outpoint: o.outpoint, id }
 }
 
 async function loadSpendById(
 	wallet: WalletInterface,
 	id: string,
-): Promise<{ outpoint: string; beef: number[]; keyID: string } | undefined> {
-	const listed = await wallet.listOutputs({
-		basket: GIB_BASKET,
-		tags: [`id:${id}`],
-		tagQueryMode: 'all',
-		include: 'entire transactions',
-		includeTags: true,
-		includeCustomInstructions: true,
-		limit: 1,
-	})
-	const row = listed.outputs?.[0]
-	if (!row || !listed.BEEF?.length) return undefined
-	if (!row.customInstructions) {
+): Promise<{ outpoint: string; beef: number[]; keyID: string }> {
+	const loaded = await loadBasketOutputBeef(wallet, GIB_BASKET, id)
+	if ('error' in loaded) throw new Error(loaded.error)
+	if (!loaded.output.customInstructions) {
 		throw new Error('commit token missing customInstructions')
 	}
-	const ci = JSON.parse(row.customInstructions) as { keyID?: string }
+	const ci = JSON.parse(loaded.output.customInstructions) as { keyID?: string }
 	if (!ci.keyID) throw new Error('customInstructions missing keyID')
 	return {
-		outpoint: row.outpoint,
-		beef: Array.from(listed.BEEF),
+		outpoint: loaded.output.outpoint,
+		beef: loaded.beef,
 		keyID: ci.keyID,
 	}
 }
