@@ -1,12 +1,13 @@
 import type { WalletInterface } from '@bsv/sdk'
 import { payloadFromScript } from '../content.ts'
 import { parseOutpoint } from '../outpoint.ts'
-import { loadTx, resolveOutpoint } from '../resolver.ts'
+import { loadTx, resolveOutpoint, resolvePath } from '../resolver.ts'
 import { collectTree, materializeGit } from '../tree.ts'
 import { decodeCommitToken } from '../token.ts'
 import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
 import { advertise, originFromUrl } from './advertise.ts'
+import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
 import type { TxStore } from '../txstore.ts'
 
 export type HelperIo = {
@@ -45,6 +46,8 @@ export async function runHelper(opts: {
 				? await advertise(opts.wallet, opts.store, origin)
 				: []
 			for (const r of refs) opts.io.write(`${r.sha} ${r.name}\n`)
+			const head = await chooseHead(opts.store, refs)
+			if (head) opts.io.write(`@${head} HEAD\n`)
 			opts.io.write('\n')
 			continue
 		}
@@ -123,6 +126,34 @@ export async function runHelper(opts: {
 }
 
 const isNewOrigin = (o: string) => o === '' || o === 'new'
+
+/**
+ * The HEAD symref to advertise: `.gib` defaultBranch when a head's tree has
+ * one that exists, else main, master, or the first ref. Resolution is
+ * best-effort; a missing or malformed `.gib` never breaks `list`.
+ */
+export async function chooseHead(
+	store: TxStore,
+	refs: Array<{ name: string; root: string }>,
+	readMeta: (store: TxStore, root: string) => Promise<string | undefined> = defaultBranchFromTree,
+): Promise<string | undefined> {
+	if (refs.length === 0) return undefined
+	const names = new Set(refs.map((r) => r.name))
+	const preferred = ['refs/heads/main', 'refs/heads/master']
+	const first = refs.find((r) => preferred.includes(r.name)) ?? refs[0]
+	const wanted = await readMeta(store, first.root)
+	if (wanted && names.has(`refs/heads/${wanted}`)) return `refs/heads/${wanted}`
+	return preferred.find((p) => names.has(p)) ?? refs[0].name
+}
+
+async function defaultBranchFromTree(store: TxStore, root: string): Promise<string | undefined> {
+	try {
+		const file = await resolvePath(store, parseOutpoint(root), GIB_FILE)
+		return parseRepoMeta(new TextDecoder().decode(file.bytes)).defaultBranch
+	} catch {
+		return undefined
+	}
+}
 
 async function setRemoteUrl(gitDir: string, remote: string, url: string): Promise<boolean> {
 	const proc = Bun.spawn(['git', '--git-dir', gitDir, 'remote', 'set-url', remote, url], {

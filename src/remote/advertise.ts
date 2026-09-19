@@ -19,7 +19,7 @@ export async function advertise(
 	wallet: WalletInterface,
 	store: TxStore,
 	origin: string,
-): Promise<Array<{ sha: string; name: string }>> {
+): Promise<Array<{ sha: string; name: string; root: string }>> {
 	if (!origin || origin === 'new') return []
 	const listed = await wallet.listOutputs({
 		basket: GIB_BASKET,
@@ -43,7 +43,7 @@ export async function advertise(
 		if (!tags.includes(branchTag(token.branch))) continue
 		const op = parseOutpoint(o.outpoint.replace('.', '_'))
 		const sha = await commitShaFromHead(store, op)
-		refs.push({ sha, name: `refs/heads/${token.branch}` })
+		refs.push({ sha, name: `refs/heads/${token.branch}`, root: token.root })
 	}
 	return refs
 }
