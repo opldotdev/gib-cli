@@ -134,7 +134,11 @@ from files in the working tree.</li>
 <h2 id="meta">Repository metadata: the <code>.gib</code> file (decided 2026-09-19)</h2>
 <p>Git has no notion of a repository name; hosts keep that in their own database.
 gib keeps it in the tree: a committed dotfile <code>.gib</code> at the root, JSON,
-published and cited like any other file.</p>
+published and cited like any other file. <strong>It is read from the genesis tree
+only</strong> (the origin outpoint): the name is part of the repository's identity,
+fixed for its life and identical for every head anyone mints against that origin.
+Editing <code>.gib</code> in a later commit changes the file in the tree but not what
+indexers report; renaming a repository means publishing a new genesis (a self-fork).</p>
 <pre>{
   "name": "gib-test",
   "description": "Small repo for exercising gibhub.net",
@@ -148,8 +152,8 @@ concern above this layer (1sat.name for the user part).</li>
 <li><strong>defaultBranch</strong>: the branch clones should check out — git's
 <code>HEAD</code> symref, which otherwise has no chain home. The helper advertises
 <code>@refs/heads/&lt;defaultBranch&gt; HEAD</code> when the file resolves.</li>
-<li>Readers: gibhub and the overlay fetch <code>/content/&lt;root&gt;/.gib</code> from a
-head's root and store name and default branch alongside the head. gib itself never
+<li>Readers: gibhub and the overlay fetch <code>/content/&lt;origin&gt;/.gib</code> once per
+repository and store name and default branch alongside each head. gib itself never
 needs the file. Unknown keys are ignored; a missing file means "unnamed".</li>
 <li>Written by <code>gib init</code>; forks inherit it until edited. This is a file in
 the repository, not the local <code>.gib/</code> state directory (which no longer

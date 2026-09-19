@@ -15,8 +15,9 @@
       not ownership. Note now, solve later
 
 # answered 2026-09-19 (details in gib-cli.html §metadata)
-- repository metadata = committed dotfile `.gib` (JSON: name, description, defaultBranch);
-  labels not identifiers, origin stays the id; default branch = git HEAD symref home
+- repository metadata = committed dotfile `.gib` (JSON: name, description, defaultBranch),
+  read from the GENESIS tree only (fixed at origin; rename = new origin); labels not
+  identifiers; default branch = git HEAD symref home
 - `gib init`: git init if needed, write `.gib`, add remote `gib://new`; helper rewrites the
   remote to `gib://<origin>` after the genesis push and reports it
 

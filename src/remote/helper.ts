@@ -47,7 +47,7 @@ export async function runHelper(opts: {
 				? await advertise(opts.wallet, opts.store, origin)
 				: []
 			for (const r of refs) opts.io.write(`${r.sha} ${r.name}\n`)
-			const head = await chooseHead(opts.store, refs)
+			const head = await chooseHead(opts.store, origin, refs)
 			if (head) opts.io.write(`@${head} HEAD\n`)
 			opts.io.write('\n')
 			continue
@@ -129,20 +129,20 @@ export async function runHelper(opts: {
 const isNewOrigin = (o: string) => o === '' || o === 'new'
 
 /**
- * The HEAD symref to advertise: `.gib` defaultBranch when a head's tree has
- * one that exists, else main, master, or the first ref. Resolution is
- * best-effort; a missing or malformed `.gib` never breaks `list`.
+ * The HEAD symref to advertise: `.gib` defaultBranch from the GENESIS tree
+ * (the origin) when that branch exists, else main, master, or the first
+ * ref. Best-effort; a missing or malformed `.gib` never breaks `list`.
  */
 export async function chooseHead(
 	store: TxStore,
-	refs: Array<{ name: string; root: string }>,
+	origin: string,
+	refs: Array<{ name: string }>,
 	readMeta: (store: TxStore, root: string) => Promise<string | undefined> = defaultBranchFromTree,
 ): Promise<string | undefined> {
 	if (refs.length === 0) return undefined
 	const names = new Set(refs.map((r) => r.name))
 	const preferred = ['refs/heads/main', 'refs/heads/master']
-	const first = refs.find((r) => preferred.includes(r.name)) ?? refs[0]
-	const wanted = await readMeta(store, first.root)
+	const wanted = await readMeta(store, origin)
 	if (wanted && names.has(`refs/heads/${wanted}`)) return `refs/heads/${wanted}`
 	return preferred.find((p) => names.has(p)) ?? refs[0].name
 }
