@@ -10,7 +10,7 @@ import {
 	type WalletInterface,
 } from '@bsv/sdk'
 import type { CommitPlan } from './cascade.ts'
-import { GIT_COMMIT_TYPE, appendOrdEnvelope, bLockingScript } from './script.ts'
+import { GIT_COMMIT_TYPE, appendOrdEnvelope, bLockingScript, isProvablyUnspendable } from './script.ts'
 import { commitHeadCustomInstructions, sealCommitLock } from './seal.ts'
 import {
 	GIB_BASKET,
@@ -90,12 +90,18 @@ async function unlockPushDrop(
 export function walletPublisher(wallet: WalletInterface): Publisher {
 	return {
 		async publishContent(plan, labels) {
-			const outputs = plan.outputs.map((o, i) => ({
-				lockingScript: bLockingScript(o.contentType, o.bytes).toHex(),
+			const outputs = plan.outputs.map((o, i) => {
+				const script = bLockingScript(o.contentType, o.bytes)
+				if (!isProvablyUnspendable(script)) {
+					throw new Error(`refusing to publish a zero-sat output miners would treat as dust: ${o.path ?? i}`)
+				}
+				return {
+					lockingScript: script.toHex(),
 				satoshis: 0,
 				// BRC-100 wallets require 5-50 chars here; paths like "/" are shorter.
 				outputDescription: `gib ${o.path ?? `content ${i}`}`.slice(0, 50),
-			}))
+							}
+			})
 			const r = await wallet.createAction({
 				description: `gib content ${labels[0] ?? ''}`.slice(0, 50),
 				outputs,
