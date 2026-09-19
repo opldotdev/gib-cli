@@ -1,10 +1,10 @@
-import { PrivateKey, ProtoWallet, Transaction } from '@bsv/sdk'
+import { Transaction } from '@bsv/sdk'
 import type { CommitPlan } from './cascade.ts'
 import type { Publisher, PublishedTx } from './publish.ts'
 import { GIT_COMMIT_TYPE, appendOrdEnvelope, bLockingScript } from './script.ts'
 import { sealCommitLock } from './seal.ts'
 
-export function localPublisher(wallet = new ProtoWallet(new PrivateKey(4242))): Publisher {
+export function localPublisher(wallet: Pick<import('@bsv/sdk').WalletInterface, 'getPublicKey' | 'createSignature'>): Publisher {
 	return {
 		async publishContent(plan: CommitPlan): Promise<PublishedTx> {
 			const tx = new Transaction()

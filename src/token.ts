@@ -30,12 +30,13 @@ export function pushLabel(sha: string): string {
 function prefixBeforeOrd(script: Script): Script {
 	const chunks = script.chunks
 	for (let i = 0; i < chunks.length - 2; i++) {
+		const marker = chunks[i + 2]
 		if (
 			chunks[i]?.op === OP.OP_0 &&
 			chunks[i + 1]?.op === OP.OP_IF &&
-			chunks[i + 2]?.data != null &&
-			chunks[i + 2].data.length === 3 &&
-			Utils.toUTF8(chunks[i + 2].data) === 'ord'
+			marker?.data != null &&
+			marker.data.length === 3 &&
+			Utils.toUTF8(marker.data) === 'ord'
 		) {
 			const p = new Script()
 			for (let j = 0; j < i; j++) p.chunks.push(chunks[j])

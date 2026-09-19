@@ -1,4 +1,6 @@
 import { PushDrop, type WalletInterface } from '@bsv/sdk'
+
+type SealWallet = Pick<WalletInterface, 'getPublicKey' | 'createSignature'>
 import {
 	type CommitToken,
 	commitTokenFields,
@@ -7,10 +9,10 @@ import {
 } from './token.ts'
 
 export async function sealCommitLock(
-	wallet: WalletInterface,
+	wallet: SealWallet,
 	token: CommitToken,
 ) {
-	return new PushDrop(wallet).lock(
+	return new PushDrop(wallet as WalletInterface).lock(
 		commitTokenFields(token),
 		GIB_PROTOCOL,
 		gibKeyId(token.root),

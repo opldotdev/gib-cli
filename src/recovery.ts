@@ -19,6 +19,7 @@ export async function recoverPush(
 	store: TxStore,
 	sha: string,
 ): Promise<RecoveryPlan[]> {
+	if (typeof wallet.listActions !== 'function') return []
 	const listed = await wallet.listActions({
 		labels: [pushLabel(sha)],
 		labelQueryMode: 'any',

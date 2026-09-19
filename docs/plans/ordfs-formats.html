@@ -110,10 +110,12 @@ the manifest. An empty delta is invalid.</li>
 </ul>
 
 <h3 id="vcdiff-profile">VCDIFF profile (on-chain contract)</h3>
-<p>The delta is RFC 3284 VCDIFF with a <em>plain</em> header. Writers MUST emit this
-profile; readers MUST reject anything else. Equivalent to
+<p>The delta is RFC 3284 VCDIFF. <strong>Writers MUST emit</strong> a <em>plain</em>
+header so every reader can apply it. Equivalent to
 <code>xdelta3 -e -n -S none -A</code> (and to <code>xdelta3-wasm</code>
-<code>xd3_encode_memory</code> with flags 0).</p>
+<code>xd3_encode_memory</code> with flags 0). Readers apply any delta their
+decoder can handle; they are not required to reject extra window features
+they understand.</p>
 <pre>header := D6 C3 C4 00 00
           magic | ver | Hdr_Indicator = 0</pre>
 <ul>

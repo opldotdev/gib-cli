@@ -44,4 +44,29 @@ describe('planCommit', () => {
 		const f = root.entries.find((e) => dirNameString(e.name) === 'f')
 		expect(f?.ref.kind).toBe('outpoint')
 	})
+
+	it('cites an untouched subdirectory instead of dropping it', async () => {
+		const genesis = await planCommit({
+			files: [
+				{ path: 'a/x', bytes: enc('x1'), contentType: 'text/plain' },
+				{ path: 'b/y', bytes: enc('y1'), contentType: 'text/plain' },
+			],
+		})
+		const scripts = genesis.outputs.map((o) => bScript(o.contentType, o.bytes))
+		const { txid, bytes } = txWithOutputs(scripts)
+		const store = memStore()
+		await store.put(txid, bytes)
+		const next = await planCommit({
+			files: [
+				{ path: 'a/x', bytes: enc('x2'), contentType: 'text/plain' },
+				{ path: 'b/y', bytes: enc('y1'), contentType: 'text/plain' },
+			],
+			prevRoot: { txid, vout: genesis.rootIndex },
+			store,
+		})
+		const root = dirDecode(next.outputs[next.rootIndex].bytes)
+		expect(root.entries.map((e) => dirNameString(e.name)).sort()).toEqual(['a', 'b'])
+		const b = root.entries.find((e) => dirNameString(e.name) === 'b')
+		expect(b?.ref.kind).toBe('outpoint')
+	})
 })

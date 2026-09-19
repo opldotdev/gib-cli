@@ -30,7 +30,7 @@ export async function runHelper(opts: {
 		if (line === null) return
 		const cmd = line.trim()
 		if (cmd === 'capabilities') {
-			opts.io.write('fetch\npush\noption\n\n')
+			opts.io.write('fetch\npush\n\n')
 			continue
 		}
 		if (cmd === 'list' || cmd === 'list for-push') {
@@ -39,10 +39,6 @@ export async function runHelper(opts: {
 				: []
 			for (const r of refs) opts.io.write(`${r.sha} ${r.name}\n`)
 			opts.io.write('\n')
-			continue
-		}
-		if (cmd.startsWith('option ')) {
-			opts.io.write('unsupported\n')
 			continue
 		}
 		if (cmd.startsWith('fetch ')) {

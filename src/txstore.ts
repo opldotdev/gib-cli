@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { Transaction } from '@bsv/sdk'
@@ -13,7 +13,20 @@ export function defaultGibHome(): string {
 	return process.env.GIB_HOME ?? join(homedir(), '.gib')
 }
 
-export function fileTxStore(root?: string): TxStore {
+export type FetchRawTx = (txid: string) => Promise<Uint8Array | undefined>
+
+export function defaultFetchRawTx(
+	baseUrl = process.env.GIB_BEEF_URL ?? 'https://api.1sat.app',
+): FetchRawTx {
+	return async (txid) => {
+		const res = await fetch(`${baseUrl.replace(/\/$/, '')}/1sat/beef/${txid}/tx`)
+		if (res.status === 404) return undefined
+		if (!res.ok) throw new Error(`beef fetch ${txid}: ${res.status}`)
+		return new Uint8Array(await res.arrayBuffer())
+	}
+}
+
+export function fileTxStore(root?: string, fetchTx?: FetchRawTx): TxStore {
 	const base = join(root ?? defaultGibHome(), 'txstore')
 	return {
 		async get(txid) {
@@ -21,21 +34,31 @@ export function fileTxStore(root?: string): TxStore {
 			try {
 				return new Uint8Array(await readFile(shardPath(base, id)))
 			} catch (e) {
-				if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-				throw e
+				if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
 			}
+			if (!fetchTx) return undefined
+			const remote = await fetchTx(id)
+			if (!remote) return undefined
+			await putLocal(base, id, remote)
+			return remote
 		},
 		async put(txid, signedBytes) {
 			const id = normalizeTxid(txid)
-			const got = txidOf(signedBytes)
-			if (got !== id) {
-				throw new Error(`txstore put: bytes hash to ${got}, not ${id}`)
-			}
-			const path = shardPath(base, id)
-			await mkdir(dirname(path), { recursive: true })
-			await writeFile(path, signedBytes)
+			await putLocal(base, id, signedBytes)
 		},
 	}
+}
+
+async function putLocal(base: string, id: string, signedBytes: Uint8Array): Promise<void> {
+	const got = txidOf(signedBytes)
+	if (got !== id) {
+		throw new Error(`txstore put: bytes hash to ${got}, not ${id}`)
+	}
+	const path = shardPath(base, id)
+	await mkdir(dirname(path), { recursive: true })
+	const tmp = `${path}.${process.pid}.tmp`
+	await writeFile(tmp, signedBytes)
+	await rename(tmp, path)
 }
 
 export function txidOf(signedBytes: Uint8Array): string {

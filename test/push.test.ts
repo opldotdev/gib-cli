@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PrivateKey, ProtoWallet } from '@bsv/sdk'
+import { PrivateKey, ProtoWallet, type WalletInterface } from '@bsv/sdk'
 import { localPublisher } from '../src/publish-local.ts'
 import { pushLine } from '../src/push.ts'
 import { memStore } from './helpers.ts'
@@ -29,7 +29,7 @@ describe('pushLine genesis', () => {
 			await writeFile(join(dir, 'README.md'), '# x\n')
 			await git(dir, ['add', 'README.md'])
 			await git(dir, ['commit', '-q', '-m', 'init'])
-			const wallet = new ProtoWallet(new PrivateKey(4242))
+			const wallet = new ProtoWallet(new PrivateKey(4242)) as unknown as WalletInterface
 			const store = memStore()
 			const r = await pushLine({
 				line: 'push HEAD:refs/heads/main',

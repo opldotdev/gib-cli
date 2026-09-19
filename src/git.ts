@@ -34,12 +34,22 @@ export function treeEntryMode(opts: { exec?: boolean; symlink?: boolean; dir?: b
 	return '100644'
 }
 
+function gitSortKey(mode: string, name: string): Uint8Array {
+	return new TextEncoder().encode(mode === '40000' ? `${name}/` : name)
+}
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+	const n = Math.min(a.length, b.length)
+	for (let i = 0; i < n; i++) {
+		if (a[i] !== b[i]) return a[i] - b[i]
+	}
+	return a.length - b.length
+}
+
 export function encodeTree(entries: Array<{ mode: string; name: string; sha: string }>): Uint8Array {
-	const sorted = [...entries].sort((a, b) => {
-		const an = a.mode === '40000' ? `${a.name}/` : a.name
-		const bn = b.mode === '40000' ? `${b.name}/` : b.name
-		return an < bn ? -1 : an > bn ? 1 : 0
-	})
+	const sorted = [...entries].sort((a, b) =>
+		compareBytes(gitSortKey(a.mode, a.name), gitSortKey(b.mode, b.name)),
+	)
 	const parts: Uint8Array[] = []
 	let n = 0
 	for (const e of sorted) {

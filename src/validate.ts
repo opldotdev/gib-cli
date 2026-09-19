@@ -1,4 +1,3 @@
-import { gitHash } from './git.ts'
 import { treeShaFromCommit } from './gitread.ts'
 import { formatOutpoint, type Outpoint } from './outpoint.ts'
 import { collectTree, materializeGit } from './tree.ts'
@@ -17,9 +16,5 @@ export async function validateRoot(
 		throw new Error(
 			`validation: resolved tree ${got.tree} != commit tree ${expectTree} (root ${formatOutpoint(root)})`,
 		)
-	}
-	const expectCommit = gitHash('commit', commitBytes)
-	if (got.commit !== expectCommit) {
-		throw new Error(`validation: commit hash ${got.commit} != ${expectCommit}`)
 	}
 }

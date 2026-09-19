@@ -1,7 +1,7 @@
 import { DIR_CONTENT_TYPE, dirEncode, dirName, type DirEntry } from './ordfs/dir.ts'
 import { PATCH_CONTENT_TYPE, patchFromContent } from './ordfs/patch.ts'
 import type { Outpoint } from './outpoint.ts'
-import { collectTree, type FileEntry } from './tree.ts'
+import { collectSnapshot, type FileEntry } from './tree.ts'
 import type { TxStore } from './txstore.ts'
 
 export type IncomingFile = {
@@ -39,20 +39,25 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 	return true
 }
 
+type DirRef =
+	| { kind: 'same-tx'; vout: number }
+	| { kind: 'outpoint'; txid: string; vout: number }
+
 export async function planCommit(opts: {
 	files: IncomingFile[]
 	prevRoot?: Outpoint
 	store?: TxStore
 }): Promise<CommitPlan> {
 	const old = new Map<string, FileEntry>()
+	const oldDirs = new Map<string, Outpoint>()
 	if (opts.prevRoot && opts.store) {
-		for (const f of await collectTree(opts.store, opts.prevRoot)) {
-			old.set(f.path, f)
-		}
+		const snap = await collectSnapshot(opts.store, opts.prevRoot)
+		for (const f of snap.files) old.set(f.path, f)
+		for (const [p, op] of snap.dirs) oldDirs.set(p, op)
 	}
 
 	const outputs: PlannedOutput[] = []
-	const fileVout = new Map<string, { kind: 'same-tx'; vout: number } | { kind: 'outpoint'; txid: string; vout: number }>()
+	const fileVout = new Map<string, DirRef>()
 	const touchedDirs = new Set<string>([''])
 
 	for (const f of opts.files) {
@@ -112,38 +117,55 @@ export async function planCommit(opts: {
 		children.get(p)!.add(f.path)
 	}
 
-	const sortedDirs = [...dirs].sort((a, b) => b.split('/').filter(Boolean).length - a.split('/').filter(Boolean).length)
+	const sortedDirs = [...dirs].sort(
+		(a, b) => b.split('/').filter(Boolean).length - a.split('/').filter(Boolean).length,
+	)
 	const dirVout = new Map<string, number>()
+	const dirCite = new Map<string, Outpoint>()
 
 	for (const d of sortedDirs) {
-		if (!touchedDirs.has(d) && d !== '') continue
+		if (!touchedDirs.has(d) && d !== '') {
+			const prev = oldDirs.get(d)
+			if (prev) dirCite.set(d, prev)
+			continue
+		}
 		const names = [...(children.get(d) ?? [])].sort()
 		const entries: DirEntry[] = []
 		for (const name of names) {
 			const base = basename(name)
 			if (dirs.has(name)) {
 				const v = dirVout.get(name)
-				if (v === undefined) continue
-				entries.push({
-					name: dirName(base),
-					isDir: true,
-					ref: { kind: 'same-tx', vout: v },
-				})
-			} else {
-				const ref = fileVout.get(name)
-				if (!ref) continue
-				const file = opts.files.find((x) => x.path === name)
-				entries.push({
-					name: dirName(base),
-					isDir: false,
-					exec: file?.exec,
-					symlink: file?.symlink,
-					ref:
-						ref.kind === 'same-tx'
-							? { kind: 'same-tx', vout: ref.vout }
-							: { kind: 'outpoint', txid: ref.txid, vout: ref.vout },
-				})
+				if (v !== undefined) {
+					entries.push({
+						name: dirName(base),
+						isDir: true,
+						ref: { kind: 'same-tx', vout: v },
+					})
+					continue
+				}
+				const cited = dirCite.get(name)
+				if (cited) {
+					entries.push({
+						name: dirName(base),
+						isDir: true,
+						ref: { kind: 'outpoint', txid: cited.txid, vout: cited.vout },
+					})
+				}
+				continue
 			}
+			const ref = fileVout.get(name)
+			if (!ref) continue
+			const file = opts.files.find((x) => x.path === name)
+			entries.push({
+				name: dirName(base),
+				isDir: false,
+				exec: file?.exec,
+				symlink: file?.symlink,
+				ref:
+					ref.kind === 'same-tx'
+						? { kind: 'same-tx', vout: ref.vout }
+						: { kind: 'outpoint', txid: ref.txid, vout: ref.vout },
+			})
 		}
 		dirVout.set(d, outputs.length)
 		outputs.push({

@@ -8,13 +8,12 @@ import {
 import type { CommitPlan } from './cascade.ts'
 import { GIT_COMMIT_TYPE, appendOrdEnvelope, bLockingScript } from './script.ts'
 import { commitHeadCustomInstructions, sealCommitLock } from './seal.ts'
+import { stampManagedOutputIds } from './ids.ts'
 import {
 	GIB_BASKET,
 	GIB_PROTOCOL,
 	branchTag,
-	gibKeyId,
 	originTag,
-	pushLabel,
 	type CommitToken,
 } from './token.ts'
 
@@ -27,7 +26,7 @@ export type Publisher = {
 		commitBytes: Uint8Array
 		labels: string[]
 		tags: string[]
-		spend?: { outpoint: string; beef: number[] }
+		spend?: { outpoint: string; beef: number[]; keyID: string }
 	}): Promise<PublishedTx>
 	burnHead(opts: {
 		outpoint: string
@@ -53,18 +52,22 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 				satoshis: 0,
 				outputDescription: o.path ?? `gib content ${i}`,
 			}))
-			const r = await wallet.createAction({
+			const args = {
 				description: `gib content ${labels[0] ?? ''}`.slice(0, 50),
 				outputs,
 				labels,
 				options: { randomizeOutputs: false, signAndProcess: true },
-			})
+			}
+			const r = await wallet.createAction(args)
 			return rawTxFromResult(r)
 		},
 		async publishHead(opts) {
+			if (opts.spend && !opts.spend.keyID) {
+				throw new Error('spend missing customInstructions keyID')
+			}
 			const pd = await sealCommitLock(wallet, opts.token)
 			const locking = appendOrdEnvelope(pd, GIT_COMMIT_TYPE, opts.commitBytes)
-			const r = await wallet.createAction({
+			const args = {
 				description: `gib head ${opts.token.branch}`.slice(0, 50),
 				...(opts.spend ? { inputBEEF: opts.spend.beef } : {}),
 				inputs: opts.spend
@@ -88,7 +91,9 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 				],
 				labels: opts.labels,
 				options: { randomizeOutputs: false, signAndProcess: !opts.spend },
-			})
+			}
+			stampManagedOutputIds(args)
+			const r = await wallet.createAction(args)
 			if (r.txid) return rawTxFromResult(r)
 			if (!r.signableTransaction || !opts.spend) {
 				throw new Error('unexpected createAction response for commit head')
@@ -104,7 +109,7 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 				if (!src) throw new Error('token input source missing')
 				const unlock = new PushDrop(wallet).unlock(
 					GIB_PROTOCOL,
-					gibKeyId(opts.token.root),
+					opts.spend.keyID,
 					'anyone',
 					'all',
 					false,

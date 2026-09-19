@@ -13,36 +13,62 @@ export type FileEntry = {
 	symlink?: boolean
 }
 
+export type TreeSnapshot = {
+	files: FileEntry[]
+	dirs: Map<string, Outpoint>
+}
+
 export async function collectTree(
 	store: TxStore,
 	root: Outpoint,
 	prefix = '',
 ): Promise<FileEntry[]> {
+	return (await collectSnapshot(store, root, prefix)).files
+}
+
+export async function collectSnapshot(
+	store: TxStore,
+	root: Outpoint,
+	prefix = '',
+	seen = new Set<string>(),
+): Promise<TreeSnapshot> {
+	const key = formatOutpoint(root)
+	if (seen.has(key)) {
+		throw new Error(`directory cycle at ${key}`)
+	}
 	const node = await resolveOutpoint(store, root)
 	if (node.contentType !== DIR_CONTENT_TYPE) {
-		return [
-			{
-				path: prefix || formatOutpoint(root),
-				bytes: node.bytes,
-				contentType: node.contentType,
-				outpoint: node.outpoint,
-			},
-		]
+		return {
+			files: [
+				{
+					path: prefix || key,
+					bytes: node.bytes,
+					contentType: node.contentType,
+					outpoint: node.outpoint,
+				},
+			],
+			dirs: new Map(),
+		}
 	}
+	seen.add(key)
 	const manifest = dirDecode(node.bytes)
-	const out: FileEntry[] = []
+	const files: FileEntry[] = []
+	const dirs = new Map<string, Outpoint>([[prefix, root]])
 	for (const e of manifest.entries) {
 		const name = dirNameString(e.name)
 		const child: Outpoint =
 			e.ref.kind === 'same-tx'
 				? { txid: root.txid, vout: e.ref.vout }
 				: { txid: e.ref.txid.toLowerCase(), vout: e.ref.vout }
+		const path = prefix ? `${prefix}/${name}` : name
 		if (e.isDir) {
-			out.push(...(await collectTree(store, child, prefix ? `${prefix}/${name}` : name)))
+			const sub = await collectSnapshot(store, child, path, seen)
+			files.push(...sub.files)
+			for (const [k, v] of sub.dirs) dirs.set(k, v)
 		} else {
 			const file = await resolveOutpoint(store, child)
-			out.push({
-				path: prefix ? `${prefix}/${name}` : name,
+			files.push({
+				path,
 				bytes: file.bytes,
 				contentType: file.contentType,
 				outpoint: file.outpoint,
@@ -51,7 +77,7 @@ export async function collectTree(
 			})
 		}
 	}
-	return out
+	return { files, dirs }
 }
 
 export async function materializeGit(

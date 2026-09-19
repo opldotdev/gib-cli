@@ -9,6 +9,7 @@
 	},
 	"scripts": {
 		"test": "bun test",
+		"typecheck": "tsc --noEmit",
 		"gib": "bun run src/main.ts",
 		"git-remote-gib": "bun run src/git-remote-gib.ts"
 	},

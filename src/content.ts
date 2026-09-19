@@ -19,12 +19,13 @@ function decodeOrd(script: Script): Payload | undefined {
 		const a = chunks[i]
 		const b = chunks[i + 1]
 		const c = chunks[i + 2]
+		const cdata = c?.data
 		if (
 			a?.op !== OP.OP_0 ||
 			b?.op !== OP.OP_IF ||
-			c?.data == null ||
-			c.data.length !== 3 ||
-			Utils.toUTF8(c.data) !== 'ord'
+			cdata == null ||
+			cdata.length !== 3 ||
+			Utils.toUTF8(cdata) !== 'ord'
 		) {
 			continue
 		}
@@ -47,10 +48,9 @@ function decodeOrd(script: Script): Payload | undefined {
 			}
 			pos++
 			if (pos >= chunks.length) break
+			const body = chunks[pos]
 			const data =
-				chunks[pos]?.data != null
-					? new Uint8Array(chunks[pos].data)
-					: new Uint8Array(0)
+				body?.data != null ? new Uint8Array(body.data) : new Uint8Array(0)
 			pos++
 			if (fieldNum === 0) content = data
 			else if (fieldNum === 1) {
@@ -61,7 +61,6 @@ function decodeOrd(script: Script): Payload | undefined {
 				}
 			}
 		}
-		if (content.length === 0) return undefined
 		return { contentType, bytes: content }
 	}
 	return undefined
@@ -79,11 +78,13 @@ function decodeB(script: Script): Payload | undefined {
 	}
 	const prefix = rest[0]?.data
 	if (!prefix || Utils.toUTF8(prefix) !== B_PREFIX) return undefined
-	const data = rest[1]?.data
-	const type = rest[2]?.data
-	if (!data || !type) return undefined
+	const dataChunk = rest[1]
+	const typeChunk = rest[2]
+	if (dataChunk == null || typeChunk?.data == null) return undefined
+	const data =
+		dataChunk.data != null ? new Uint8Array(dataChunk.data) : new Uint8Array(0)
 	return {
-		contentType: Utils.toUTF8(type),
-		bytes: new Uint8Array(data),
+		contentType: Utils.toUTF8(typeChunk.data),
+		bytes: data,
 	}
 }

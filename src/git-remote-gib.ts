@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createInterface } from 'node:readline'
 import { connectWallet } from './wallet.ts'
-import { fileTxStore } from './txstore.ts'
+import { defaultFetchRawTx, fileTxStore } from './txstore.ts'
 import { runHelper } from './remote/helper.ts'
 
 const url = process.argv[3] ?? process.argv[2]
@@ -15,7 +15,7 @@ const iter = rl[Symbol.asyncIterator]()
 
 await runHelper({
 	url,
-	store: fileTxStore(),
+	store: fileTxStore(undefined, defaultFetchRawTx()),
 	wallet: connectWallet(),
 	gitDir: process.env.GIT_DIR ?? '.git',
 	io: {
