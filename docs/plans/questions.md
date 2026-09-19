@@ -1,7 +1,5 @@
 # gib open questions (one per turn; answered ones move out)
 
-- [ ] default-branch designation (git HEAD symref) — no chain home yet
-- [ ] project-manifest convention file: name/filename TBD
 - [ ] wallet label scheme (BRC-100): basket `gib`; tx label push:<sha> on every tx of a
       push; output tags origin:<o>/branch:<n> on commit heads. Txstore stores SIGNED bytes
       only (txid changes at signing — build-time writes are useless). Recovery =
@@ -15,6 +13,13 @@
 - [ ] txstore scoping/housekeeping: correlate which repos each tx is used for (many-to-many —
       shared txs must NOT duplicate) so unused projects can be pruned. GC-style reachability,
       not ownership. Note now, solve later
+
+# answered 2026-09-19 (details in gib-cli.html §metadata)
+- repository metadata = committed dotfile `.gib` (JSON: name, description, defaultBranch),
+  read from the GENESIS tree only (fixed at origin; rename = new origin); labels not
+  identifiers; default branch = git HEAD symref home
+- `gib init`: git init if needed, write `.gib`, add remote `gib://new`; helper rewrites the
+  remote to `gib://<origin>` after the genesis push and reports it
 
 # answered 2026-09-18 → decisions (details in gib-token.html / gib-cli.html / gib-format.html)
 - file modes: SOLVED by ordfs/dir flags byte (EXEC/SYMLINK bits; symlink leaf bytes =

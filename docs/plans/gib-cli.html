@@ -131,11 +131,52 @@ Token→repo association comes from origin tags written by gib at mint/publish t
 from files in the working tree.</li>
 </ul>
 
+<h2 id="meta">Repository metadata: the <code>.gib</code> file (decided 2026-09-19)</h2>
+<p>Git has no notion of a repository name; hosts keep that in their own database.
+gib keeps it in the tree: a committed dotfile <code>.gib</code> at the root, JSON,
+published and cited like any other file. <strong>It is read from the genesis tree
+only</strong> (the origin outpoint): the name is part of the repository's identity,
+fixed for its life and identical for every head anyone mints against that origin.
+Editing <code>.gib</code> in a later commit changes the file in the tree but not what
+indexers report; renaming a repository means publishing a new genesis (a self-fork).</p>
+<pre>{
+  "name": "gib-test",
+  "description": "Small repo for exercising gibhub.net",
+  "defaultBranch": "main"
+}</pre>
+<ul>
+<li><strong>name</strong>, <strong>description</strong>: display metadata. Labels, not
+identifiers — the origin outpoint stays the repository's identity, and two repositories
+may claim the same name. Uniqueness and <code>user/repo</code> URLs are a registry
+concern above this layer (1sat.name for the user part).</li>
+<li><strong>defaultBranch</strong>: the branch clones should check out — git's
+<code>HEAD</code> symref, which otherwise has no chain home. The helper advertises
+<code>@refs/heads/&lt;defaultBranch&gt; HEAD</code> when the file resolves.</li>
+<li>Readers: gibhub and the overlay fetch <code>/content/&lt;origin&gt;/.gib</code> once per
+repository and store name and default branch alongside each head. gib itself never
+needs the file. Unknown keys are ignored; a missing file means "unnamed".</li>
+<li>Written by <code>gib init</code>; forks inherit it until edited. This is a file in
+the repository, not the local <code>.gib/</code> state directory (which no longer
+exists).</li>
+</ul>
+<h3>gib init</h3>
+<p><code>gib init [-y] [--name] [--description] [--default-branch] [--remote origin]
+[--force]</code> runs in the project directory. If it is not a git repository yet it
+runs <code>git init -b &lt;defaultBranch&gt;</code>, so a gib-first user needs one
+command. It prompts for name (default: directory name), description, and default branch
+(default: current branch), writes <code>.gib</code>, and adds the remote as
+<code>gib://new</code> unless a gib remote already exists. Nothing touches chain. The
+user commits and pushes as usual.</p>
+<p>On the first push the helper mints the repository, then rewrites the remote URL to
+<code>gib://&lt;origin&gt;</code> and prints it, so the next push extends the same
+repository instead of minting another. Refs pushed in the same batch join the new
+origin.</p>
+
 <h2 id="remote">Interface requirements (git-remote-gib)</h2>
 <ul>
 <li><strong>Advertise:</strong> wallet list-by-tag → per branch: latest commit head →
 decode its inscription → sha → <code>&lt;sha&gt; refs/heads/&lt;name&gt;</code>. HEAD-as-symref
-(default branch) has no chain home yet — convention-file candidate.</li>
+(default branch) comes from <code>.gib</code> <code>defaultBranch</code> (see <a href="#meta">metadata</a>).</li>
 <li><strong>Push intake:</strong> old-sha in git's ref-update must equal the sha our token
 names (double-check); ingest pack → objects → records + cascade + commit inscription +
 token spend. Ref lifecycle = coin lifecycle: create=mint, delete=burn, ff=spend forward,
@@ -168,8 +209,6 @@ easily.</li>
 <ul>
 <li><strong>File modes:</strong> git tree entries carry exec bit/symlink marks; manifests
 don't. Add modes to manifest entries, or store tree objects verbatim.</li>
-<li>Default-branch designation (git's HEAD symref) — home TBD.</li>
-<li>Project-manifest convention file: name (and what else), filename TBD.</li>
 <li>Cascade fee economics and tx batching; coalescing tradeoff (big tx vs per-file fetch).</li>
 <li>Annotated-tag tx shape (own fused tx vs riding a commit).</li>
 <li>Clone-from-stranger flow: mint own token citing foreign root; new repo ID on fork —

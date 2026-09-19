@@ -64,7 +64,8 @@ entry :=
   [target]
        REFTYPE 0:  [1B vout]                     sibling output in the same tx
        REFTYPE 1:  [32B txid][4B vout]           exact Bitcoin outpoint bytes
-                                                 (vout little-endian, as in a tx input)</pre>
+                                                  (txid internal/LE byte order,
+                                                  vout little-endian, as in a tx input)</pre>
 <p>Entry size = 3 + name + (1 or 36). A directory is 3 + Σ(entries). Example — root with
 <code>LICENSE</code> from an earlier tx and three same-tx children (sorted: LICENSE,
 README.md, package.json, src):</p>
@@ -92,7 +93,7 @@ format bumps it.</li>
 <h2 id="patch">ordfs/patch — record</h2>
 <pre>patch :=
   [1B  version]            0x00
-  [36B base outpoint]      native Bitcoin outpoint bytes (txid + LE vout)
+  [36B base outpoint]      native Bitcoin outpoint (internal-order txid + LE vout)
   [..  vcdiff delta]       RFC 3284 — standard header (D6 C3 C4 00) + windows</pre>
 <ul>
 <li><strong>Base is any content</strong> — ordinal, B-protocol output, or another
@@ -112,6 +113,28 @@ verified against our output: xdelta3 CLI, <code>@ably/vcdiff-decoder</code>,
 xdelta3-wasm.</li>
 <li>The base chain must terminate at a non-patch (or a patch whose base is unreachable is
 unresolvable).</li>
+<li><strong>Identical content is never a patch.</strong> Cite the existing outpoint from
+the manifest. An empty delta is invalid.</li>
+</ul>
+
+<h3 id="vcdiff-profile">VCDIFF profile (on-chain contract)</h3>
+<p>The delta is RFC 3284 VCDIFF. <strong>Writers MUST emit</strong> a <em>plain</em>
+header so every reader can apply it. Equivalent to
+<code>xdelta3 -e -n -S none -A</code> (and to <code>xdelta3-wasm</code>
+<code>xd3_encode_memory</code> with flags 0). Readers apply any delta their
+decoder can handle; they are not required to reject extra window features
+they understand.</p>
+<pre>header := D6 C3 C4 00 00
+          magic | ver | Hdr_Indicator = 0</pre>
+<ul>
+<li><strong>Hdr_Indicator = 0:</strong> no <code>VCD_DECOMPRESS</code> (secondary
+compression), no custom code table, no application header.</li>
+<li><strong>Delta_Indicator = 0</strong> on every window (sections uncompressed).</li>
+<li>No xdelta3 Adler-32 window checksum (<code>Win_Indicator</code> bit 0x10 unset).</li>
+<li>xdelta3 CLI default output is <em>not</em> this profile (djw secondary + app
+header). Do not write it. Interop test: encode with the flags above, decode with
+any RFC-plain decoder (<code>xdelta3-wasm</code>, <code>@ably/vcdiff-decoder</code>,
+<code>xdelta3 -d</code>).</li>
 </ul>
 
 <h2 id="resolve">Gateway behavior (1sat-stack/pkg/ordfs)</h2>
