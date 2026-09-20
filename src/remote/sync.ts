@@ -30,6 +30,13 @@ export const CONVENTIONAL_BRANCHES = ['main', 'master']
 /**
  * Bring the local state up to date with the peer's copy of one branch.
  * Returns the heads that were new here.
+ *
+ * TODO: a headsSince page is a walk of the branch's chain, and says
+ * nothing about whether its last head has since been spent. A branch
+ * deleted by burning its head therefore still advertises here, to anyone
+ * who learns about it from a peer rather than from their own delete. The
+ * overlay knows (it tracks the spend); the answer needs to carry it — a
+ * spent flag on each head, or a tombstone for the branch.
  */
 export async function pullBranch(
 	peer: Peer,

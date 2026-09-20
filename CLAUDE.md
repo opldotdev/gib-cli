@@ -64,3 +64,6 @@ re-litigation here. This file is about how to work in the repository.
   `defaultBranch`.
 - A push of many commits mints one wallet action per head. There is no batching, because
   each head spends the one before it.
+- `headsSince` says nothing about whether a branch's last head has been spent, so a
+  branch deleted by burning its head still advertises to anyone who learns about it from
+  a peer rather than from their own delete. See the TODO on `pullBranch`.
