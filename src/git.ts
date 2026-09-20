@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 export function gitHash(type: 'blob' | 'tree' | 'commit' | 'tag', body: Uint8Array): string {
@@ -17,13 +18,19 @@ export async function writeGitObject(
 ): Promise<string> {
 	const sha = gitHash(type, body)
 	const path = join(gitDir, 'objects', sha.slice(0, 2), sha.slice(2))
+	// A loose object is content-addressed and written read-only. One that
+	// is already there is already right, and rewriting it fails on its own
+	// permissions.
+	if (existsSync(path)) return sha
 	const { deflateSync } = await import('node:zlib')
 	const header = new TextEncoder().encode(`${type} ${body.length}\0`)
 	const raw = new Uint8Array(header.length + body.length)
 	raw.set(header)
 	raw.set(body, header.length)
 	await mkdir(dirname(path), { recursive: true })
-	await writeFile(path, deflateSync(raw))
+	const tmp = `${path}.${process.pid}.tmp`
+	await writeFile(tmp, deflateSync(raw), { mode: 0o444 })
+	await rename(tmp, path)
 	return sha
 }
 

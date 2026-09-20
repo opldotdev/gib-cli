@@ -135,7 +135,7 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 					origin,
 					identity,
 					peer: opts.peer,
-					have: shasOnRepo(state),
+					have: ourShas(state, identity),
 					home: opts.home,
 					log,
 				})
@@ -210,9 +210,19 @@ function headFor(
 	return Object.values(state.refs).find((r) => r.sha === sha)?.head
 }
 
-/** Every commit this client knows is already published on the repository. */
-function shasOnRepo(state: RepoState): string[] {
-	return Object.values(state.refs).map((r) => r.sha)
+/**
+ * The commits this identity's own head chains already publish.
+ *
+ * Only our own: a branch's spend chain has to carry that branch's whole
+ * history, so a commit another publisher minted still needs a head of
+ * ours before our branch can point past it. Its content is cited, not
+ * rewritten, so what that costs is a head, not a tree.
+ */
+function ourShas(state: RepoState, identity: string): string[] {
+	if (!identity) return []
+	return Object.values(state.refs)
+		.filter((r) => r.identity === identity)
+		.map((r) => r.sha)
 }
 
 async function readUntilBlank(io: HelperIo): Promise<string[]> {
