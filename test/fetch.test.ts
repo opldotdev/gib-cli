@@ -167,4 +167,70 @@ describe('fetch from a peer', () => {
 		expect(await pullRepo(peer, reader, state)).toBe(2)
 		expect(state.branches).toContain('trunk')
 	})
+
+	it('imports every parent of a merge, not just the tip\'s', async () => {
+		const fake = await FakeWallet.create(new PrivateKey(11))
+		const wallet = fake.asWallet()
+		const home = await mkdtemp(join(tmpdir(), 'gib-home-'))
+		const repo = await tempRepo({ 'a.txt': 'a1' })
+		trash.push(home, repo.dir)
+		const fakePeer = startFakePeer()
+		stoppable.push(fakePeer)
+		const peer = new Peer({
+			submit: `${fakePeer.url}/1sat/gib/overlay`,
+			lookup: `${fakePeer.url}/1sat/gib/overlay`,
+		})
+		const store = memStore()
+		const base = {
+			gitDir: repo.gitDir,
+			store,
+			wallet,
+			publisher: walletPublisher(wallet),
+			identity: fake.identityKey,
+			home,
+			peer,
+		}
+		const genesis = await mintGenesis({ ...base, rev: 'HEAD', branch: 'main' })
+		const c2 = await commitFiles(repo.dir, { 'a.txt': 'a2' }, 'c2')
+		const first = await pushLine('push HEAD:refs/heads/main', {
+			...base,
+			origin: genesis.origin,
+		})
+		if (!first.ok) throw new Error(first.error)
+
+		// A reader takes the branch as it stands: two commits.
+		const reader = memStore()
+		const state = emptyRepoState(genesis.origin)
+		await pullRepo(peer, reader, state)
+		const clone = await mkdtemp(join(tmpdir(), 'gib-clone-'))
+		trash.push(clone)
+		await git(clone, ['init', '-q', '--bare'])
+		await importHistory(reader, clone, first.head, { peer })
+
+		// Now a real merge: a side branch off c2, a commit on main, merge.
+		await git(repo.dir, ['checkout', '-q', '-b', 'side'])
+		const side = await commitFiles(repo.dir, { 'side.txt': 's' }, 'side')
+		await git(repo.dir, ['checkout', '-q', 'main'])
+		const c3 = await commitFiles(repo.dir, { 'a.txt': 'a3' }, 'c3')
+		await git(repo.dir, ['merge', '-q', '--no-ff', '-m', 'merge', 'side'])
+		const merge = await git(repo.dir, ['rev-parse', 'HEAD'])
+		const second = await pushLine('push HEAD:refs/heads/main', {
+			...base,
+			origin: genesis.origin,
+			have: [c2],
+		})
+		if (!second.ok) throw new Error(second.error)
+		expect(second.minted).toBe(3) // c3, side, merge
+
+		// The incremental fetch must not stop at the merge's first
+		// satisfied parent and leave the other one missing.
+		await pullRepo(peer, reader, state)
+		const imported = await importHistory(reader, clone, second.head, { peer })
+		expect(imported.map((i) => i.commit).sort()).toEqual(
+			[merge, side, c3].sort(),
+		)
+		await git(clone, ['fsck', '--strict', '--no-dangling'])
+		expect(await git(clone, ['rev-list', '--count', merge])).toBe('5')
+		expect(genesis.sha).toBeTruthy()
+	})
 })

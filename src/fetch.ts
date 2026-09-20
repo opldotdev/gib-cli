@@ -4,10 +4,11 @@
  * parents.
  *
  * Every head carries its own commit and its own root tree, so a fetch is a
- * walk, not a replay: one head, one commit, one tree. Parents on other
- * branches (merges) are not on this chain; they are found when that branch
- * is fetched. A parent no reachable head carries stays missing and git
- * says so.
+ * walk, not a replay: one head, one commit, one tree. A push mints its
+ * commits in topological order, so a merge's second parent is further back
+ * on the same chain — the walk has to keep going until *every* parent of
+ * *every* commit it imported is accounted for, not just the last one's. A
+ * parent no reachable head carries stays missing and git says so.
  */
 
 import { readHead, previousHead } from './head.ts'
@@ -80,19 +81,21 @@ export async function importHistory(
 	const maxDepth = opts.maxDepth ?? 100_000
 	const imported: Imported[] = []
 	const seen = new Set<string>()
+	// Parents still owed to git, across everything imported so far. A merge
+	// commit's second parent is imported later than the first parent's own
+	// ancestors, so stopping when the *last* commit is satisfied leaves a
+	// hole in the middle of the history.
+	const owed = new Set<string>()
 	let head: string | undefined = tip
 	while (head && !seen.has(head) && imported.length < maxDepth) {
 		seen.add(head)
 		const r = await importCommit(store, gitDir, head, opts.peer)
 		imported.push(r)
-		let missing = false
+		owed.delete(r.commit)
 		for (const p of r.parents) {
-			if (!(await hasObject(p))) {
-				missing = true
-				break
-			}
+			if (!(await hasObject(p))) owed.add(p)
 		}
-		if (!missing) break
+		if (owed.size === 0) break
 		head = await previousOnChain(store, head, opts.peer)
 	}
 	return imported
