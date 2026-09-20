@@ -1,143 +1,218 @@
+/**
+ * The git remote-helper protocol for gib: capabilities, list, fetch, push.
+ *
+ * A git remote is one peer on one repository origin
+ * (`gib://<host>/<repository origin>`). `list` refreshes every publisher's
+ * heads from the peer and advertises the user's own as
+ * `refs/heads/<branch>` and every other publisher's as
+ * `refs/heads/@<identity>/<branch>`. `fetch` walks a branch's spend chain
+ * back into git. `push` mints through the wallet and submits to the peer.
+ *
+ * Nothing here validates a chain: the peer's overlay does that, and this
+ * client asked it for what it got.
+ */
+
 import type { WalletInterface } from '@bsv/sdk'
-import { payloadFromScript } from '../content.ts'
-import { parseOutpoint } from '../outpoint.ts'
-import { loadTx, resolveOutpoint, resolvePath } from '../resolver.ts'
-import { collectTree, materializeGit } from '../tree.ts'
-import { decodeCommitToken } from '../token.ts'
+import { importHistory } from '../fetch.ts'
+import { loadIdentity, saveIdentity } from '../identity.ts'
 import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
-import { advertise, originFromUrl } from './advertise.ts'
-import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
-import { importHistory } from '../fetch.ts'
+import {
+	forgetHead,
+	loadRepoState,
+	recordHead,
+	type RepoState,
+	saveRepoState,
+} from '../refs.ts'
+import { readHead } from '../head.ts'
+import { NULL_SHA } from '../token.ts'
 import type { TxStore } from '../txstore.ts'
+import { advertise, chooseHead, type Ref, splitRef } from './advertise.ts'
+import type { Peer } from './peer.ts'
+import { pullRepo } from './sync.ts'
+import { parseGibUrl } from './url.ts'
 
 export type HelperIo = {
 	read: () => Promise<string | null>
 	write: (s: string) => void
 }
 
-export { advertise, originFromUrl }
-
-export async function runHelper(opts: {
+export type HelperOptions = {
 	url: string
-	/** Remote name git invoked us with; lets a genesis push rewrite its URL. */
+	/** Remote name git invoked us with. */
 	remoteName?: string
 	store: TxStore
-	wallet?: WalletInterface
+	/** The peer the URL names, when it names one. */
+	peer?: Peer
+	/** Connects the wallet; only a push needs one. */
+	wallet?: () => Promise<WalletInterface>
 	/** Overrides the wallet-backed publisher (tests). */
 	publisher?: Publisher
 	gitDir: string
 	io: HelperIo
 	home?: string
-	/** Where progress lines go; defaults to stderr, which git relays to the user. */
+	/** Where progress lines go; git relays stderr to the user. */
 	log?: (s: string) => void
-}): Promise<void> {
-	const origin = originFromUrl(opts.url)
+	/** Branch names the local repository knows, to help a first refresh. */
+	localBranches?: string[]
+}
+
+export async function runHelper(opts: HelperOptions): Promise<void> {
+	const { origin } = parseGibUrl(opts.url)
 	const log = opts.log ?? ((s: string) => process.stderr.write(s))
+	const state = await loadRepoState(origin, opts.home)
+	let identity = await loadIdentity(opts.home)
+
+	const refresh = async (): Promise<Ref[]> => {
+		if (opts.peer) {
+			try {
+				const added = await pullRepo(
+					opts.peer,
+					opts.store,
+					state,
+					opts.localBranches ?? [],
+				)
+				if (added > 0) log(`gib: fetched ${added} head(s) from the remote\n`)
+			} catch (e) {
+				log(`gib: ${e instanceof Error ? e.message : e}\n`)
+			}
+			await saveRepoState(state, opts.home)
+		}
+		return advertise(state, identity)
+	}
+
 	for (;;) {
 		const line = await opts.io.read()
 		if (line === null) return
 		const cmd = line.trim()
+		if (cmd === '') continue
 		if (cmd === 'capabilities') {
 			opts.io.write('fetch\npush\n\n')
 			continue
 		}
 		if (cmd === 'list' || cmd === 'list for-push') {
-			const refs = opts.wallet
-				? await advertise(opts.wallet, opts.store, origin)
-				: []
+			const refs = await refresh()
 			for (const r of refs) opts.io.write(`${r.sha} ${r.name}\n`)
-			const head = await chooseHead(opts.store, origin, refs)
+			const head = chooseHead(refs, state, identity)
 			if (head) opts.io.write(`@${head} HEAD\n`)
 			opts.io.write('\n')
 			continue
 		}
 		if (cmd.startsWith('fetch ')) {
-			const fetches = [cmd, ...(await readUntilBlank(opts.io))]
-			if (!opts.wallet) throw new Error('fetch requires wallet')
-			const refs = await advertise(opts.wallet, opts.store, origin)
-			for (const f of fetches) {
-				const sha = f.split(' ')[1]
-				const hit = refs.find((r) => r.sha === sha)
-				if (!hit) throw new Error(`unknown sha ${sha}`)
-				const listed = await opts.wallet.listOutputs({
-					basket: 'gib',
-					tags: [
-						`origin:${origin}`,
-						`branch:${hit.name.replace('refs/heads/', '')}`,
-					],
-					tagQueryMode: 'all',
-					include: 'locking scripts',
-					limit: 1,
-				})
-				const o = listed.outputs?.[0]
-				if (!o) throw new Error(`no token for ${hit.name}`)
-				await importHistory(opts.store, opts.gitDir, o.outpoint.replace('.', '_'))
+			const lines = [cmd, ...(await readUntilBlank(opts.io))]
+			for (const l of lines) {
+				const [, sha, ref] = l.split(' ')
+				await fetchRef(opts, state, identity, sha, ref ?? '', log)
 			}
+			await saveRepoState(state, opts.home)
 			opts.io.write('\n')
 			continue
 		}
 		if (cmd.startsWith('push ')) {
-			const pushes = [cmd, ...(await readUntilBlank(opts.io))]
-			if (!opts.wallet) {
-				for (const p of pushes) {
-					const dst = p.slice(p.lastIndexOf(':') + 1)
-					opts.io.write(`error ${dst} no wallet\n`)
+			const lines = [cmd, ...(await readUntilBlank(opts.io))]
+			let wallet: WalletInterface | undefined
+			try {
+				if (!opts.wallet) throw new Error('no wallet configured')
+				wallet = await opts.wallet()
+				const got = await wallet.getPublicKey({ identityKey: true })
+				identity = got.publicKey
+				await saveIdentity(identity, opts.home).catch(() => {})
+			} catch (e) {
+				for (const l of lines) {
+					opts.io.write(`error ${dstOf(l)} ${oneLine(e)}\n`)
 				}
 				opts.io.write('\n')
 				continue
 			}
-			const publisher = opts.publisher ?? walletPublisher(opts.wallet)
-			const { publicKey: identity } = await opts.wallet.getPublicKey({
-				identityKey: true,
-			})
-			for (const p of pushes) {
-				const r = await pushLine(p, {
+			await refresh()
+			const publisher = opts.publisher ?? walletPublisher(wallet)
+			for (const l of lines) {
+				const r = await pushLine(l, {
 					gitDir: opts.gitDir,
 					store: opts.store,
-					wallet: opts.wallet,
+					wallet,
 					publisher,
 					origin,
 					identity,
+					peer: opts.peer,
+					have: shasOnRepo(state),
 					home: opts.home,
 					log,
 				})
-				if (r.ok) opts.io.write(`ok ${r.dst}\n`)
-				else opts.io.write(`error ${r.dst} ${r.error}\n`)
+				if (!r.ok) {
+					opts.io.write(`error ${r.dst} ${r.error}\n`)
+					continue
+				}
+				if (r.sha === NULL_SHA) forgetHead(state, identity, r.branch)
+				else if (r.head) {
+					const head = await readHead(opts.store, r.head)
+					recordHead(state, {
+						identity,
+						branch: r.branch,
+						head: r.head,
+						sha: r.sha,
+						root: head.token.root,
+					})
+				}
+				opts.io.write(`ok ${r.dst}\n`)
 			}
+			await saveRepoState(state, opts.home)
 			opts.io.write('\n')
 			continue
 		}
-		if (cmd === '') continue
+		throw new Error(`git-remote-gib: unsupported command ${cmd}`)
 	}
 }
 
-/**
- * The HEAD symref to advertise: `.gib` defaultBranch from the GENESIS tree
- * (the origin) when that branch exists, else main, master, or the first
- * ref. Best-effort; a missing or malformed `.gib` never breaks `list`.
- */
-export async function chooseHead(
-	store: TxStore,
-	origin: string,
-	refs: Array<{ name: string }>,
-	readMeta: (store: TxStore, root: string) => Promise<string | undefined> = defaultBranchFromTree,
-): Promise<string | undefined> {
-	if (refs.length === 0) return undefined
-	const names = new Set(refs.map((r) => r.name))
-	const preferred = ['refs/heads/main', 'refs/heads/master']
-	const wanted = await readMeta(store, origin)
-	if (wanted && names.has(`refs/heads/${wanted}`)) return `refs/heads/${wanted}`
-	return preferred.find((p) => names.has(p)) ?? refs[0].name
+/** Import the history behind one advertised ref. */
+async function fetchRef(
+	opts: HelperOptions,
+	state: RepoState,
+	identity: string,
+	sha: string,
+	ref: string,
+	log: (s: string) => void,
+): Promise<void> {
+	let head = headFor(state, identity, sha, ref)
+	if (!head && opts.peer) {
+		await pullRepo(opts.peer, opts.store, state, opts.localBranches ?? [])
+		head = headFor(state, identity, sha, ref)
+	}
+	if (!head) {
+		throw new Error(
+			`git-remote-gib: no head on ${state.origin} publishes commit ${sha}`,
+		)
+	}
+	const imported = await importHistory(opts.store, opts.gitDir, head, {
+		peer: opts.peer,
+	})
+	log(`gib: imported ${imported.length} commit(s) for ${sha.slice(0, 12)}\n`)
 }
 
-async function defaultBranchFromTree(store: TxStore, root: string): Promise<string | undefined> {
-	try {
-		const file = await resolvePath(store, parseOutpoint(root), GIB_FILE)
-		return parseRepoMeta(new TextDecoder().decode(file.bytes)).defaultBranch
-	} catch {
-		return undefined
+function headFor(
+	state: RepoState,
+	identity: string,
+	sha: string,
+	ref: string,
+): string | undefined {
+	if (ref) {
+		try {
+			const { publisher, branch } = splitRef(ref, identity)
+			for (const r of Object.values(state.refs)) {
+				if (r.branch === branch && r.identity === publisher && r.sha === sha) {
+					return r.head
+				}
+			}
+		} catch {
+			// fall through to the sha search
+		}
 	}
+	return Object.values(state.refs).find((r) => r.sha === sha)?.head
+}
+
+/** Every commit this client knows is already published on the repository. */
+function shasOnRepo(state: RepoState): string[] {
+	return Object.values(state.refs).map((r) => r.sha)
 }
 
 async function readUntilBlank(io: HelperIo): Promise<string[]> {
@@ -148,4 +223,13 @@ async function readUntilBlank(io: HelperIo): Promise<string[]> {
 		lines.push(line.trim())
 	}
 	return lines
+}
+
+function dstOf(line: string): string {
+	return line.slice(line.lastIndexOf(':') + 1)
+}
+
+function oneLine(e: unknown): string {
+	const text = e instanceof Error ? e.message : String(e)
+	return text.split('\n').map((l) => l.trim()).filter(Boolean).join(' ')
 }

@@ -125,3 +125,14 @@ export async function revList(
 export async function hasObject(gitDir: string, sha: string): Promise<boolean> {
 	return (await git(gitDir, ['cat-file', '-e', `${sha}^{commit}`])).code === 0
 }
+
+/** Branch names the local repository has, for a first refresh from a peer. */
+export async function localBranches(gitDir: string): Promise<string[]> {
+	const r = await git(gitDir, [
+		'for-each-ref',
+		'--format=%(refname:short)',
+		'refs/heads',
+	])
+	if (r.code !== 0) return []
+	return r.out.split('\n').map((l) => l.trim()).filter(Boolean)
+}

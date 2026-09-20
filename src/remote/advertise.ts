@@ -1,61 +1,98 @@
-import type { WalletInterface } from '@bsv/sdk'
-import { payloadFromScript } from '../content.ts'
-import { gitHash } from '../git.ts'
-import { parseOutpoint } from '../outpoint.ts'
-import { loadTx } from '../resolver.ts'
-import {
-	branchTag,
-	decodeCommitToken,
-	GIB_BASKET,
-	originTag,
-} from '../token.ts'
-import type { TxStore } from '../txstore.ts'
+/**
+ * Naming refs for git.
+ *
+ * Heads signed by this wallet's identity advertise as plain
+ * `refs/heads/<branch>`; every other publisher's as
+ * `refs/heads/@<identity>/<branch>`. With no wallet and no cached
+ * identity, nothing is bare — a reader sees every branch attributed.
+ *
+ * The refs come from what the store holds, not from the wallet's basket: a
+ * repository is not "the coins I own", it is the heads on a repository
+ * origin, whoever published them.
+ */
 
-export function originFromUrl(url: string): string {
-	return url.replace(/^gib:\/\//, '').replace(/\/$/, '')
+import { parseIdentity } from './url.ts'
+import type { RepoState } from '../refs.ts'
+
+export type Ref = {
+	sha: string
+	name: string
+	/** Who published the head this ref names. */
+	identity: string
+	branch: string
+	head: string
 }
 
-export async function advertise(
-	wallet: WalletInterface,
-	store: TxStore,
-	origin: string,
-): Promise<Array<{ sha: string; name: string; root: string }>> {
-	if (!origin || origin === 'new') return []
-	const listed = await wallet.listOutputs({
-		basket: GIB_BASKET,
-		tags: [originTag(origin)],
-		tagQueryMode: 'all',
-		include: 'locking scripts',
-		includeTags: true,
-		limit: 10000,
-	})
-	const refs: Array<{ sha: string; name: string; root: string }> = []
-	for (const o of listed.outputs ?? []) {
-		if (!o.lockingScript) continue
-		let token: ReturnType<typeof decodeCommitToken>
-		try {
-			token = decodeCommitToken(o.lockingScript)
-		} catch {
-			continue
-		}
-		if (token.origin !== origin) continue
-		const tags = o.tags ?? []
-		if (!tags.includes(branchTag(token.branch))) continue
-		const op = parseOutpoint(o.outpoint.replace('.', '_'))
-		const sha = await commitShaFromHead(store, op)
-		refs.push({ sha, name: `refs/heads/${token.branch}`, root: token.root })
+export function refName(publisher: string, branch: string, me: string): string {
+	if (me && publisher === me) return `refs/heads/${branch}`
+	return `refs/heads/@${publisher}/${branch}`
+}
+
+/**
+ * The (publisher, branch) an advertised ref names. A bare
+ * `refs/heads/<branch>` is the user's own.
+ */
+export function splitRef(
+	ref: string,
+	me: string,
+): { publisher: string; branch: string } {
+	const name = ref.replace(/^refs\/heads\//, '')
+	if (!name || name === ref) {
+		throw new Error(
+			`bad ref ${ref}: gib serves refs/heads/<branch> and refs/heads/@<identity>/<branch>`,
+		)
 	}
-	return refs
+	if (!name.startsWith('@')) return { publisher: me, branch: name }
+	const slash = name.indexOf('/')
+	if (slash < 0 || slash === name.length - 1) {
+		throw new Error(`bad ref ${ref}: want refs/heads/@<identity>/<branch>`)
+	}
+	const id = parseIdentity(name.slice(1, slash))
+	if (!id) throw new Error(`bad ref ${ref}: not an identity key`)
+	return { publisher: id, branch: name.slice(slash + 1) }
 }
 
-async function commitShaFromHead(
-	store: TxStore,
-	op: ReturnType<typeof parseOutpoint>,
-): Promise<string> {
-	const tx = await loadTx(store, op.txid)
-	const out = tx.outputs[op.vout]
-	if (!out) throw new Error(`missing commit head ${op.txid}_${op.vout}`)
-	const payload = payloadFromScript(out.lockingScript)
-	if (!payload) throw new Error('commit head has no inscription')
-	return gitHash('commit', payload.bytes)
+/** Every current head on the repository, named relative to `me`. */
+export function advertise(state: RepoState, me: string): Ref[] {
+	return Object.values(state.refs)
+		.map((r) => ({
+			sha: r.sha,
+			name: refName(r.identity, r.branch, me),
+			identity: r.identity,
+			branch: r.branch,
+			head: r.head,
+		}))
+		.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+}
+
+/**
+ * The HEAD symref: the branch the repository was created on — the genesis
+ * head's, the earliest head on the repository origin — then main, master,
+ * and finally the first ref. For that branch the user's own ref wins over
+ * a publisher-prefixed one, and the repository owner's over a stranger's.
+ */
+export function chooseHead(
+	refs: Ref[],
+	state: RepoState,
+	me: string,
+): string | undefined {
+	if (refs.length === 0) return undefined
+	const owner = state.genesis?.identity ?? ''
+	const pick = (branch: string): string | undefined => {
+		if (!branch) return undefined
+		let ownerRef: string | undefined
+		let anyRef: string | undefined
+		for (const r of refs) {
+			if (r.branch !== branch) continue
+			if (me && r.identity === me) return r.name
+			if (owner && r.identity === owner && !ownerRef) ownerRef = r.name
+			if (!anyRef) anyRef = r.name
+		}
+		return ownerRef ?? anyRef
+	}
+	for (const branch of [state.genesis?.branch ?? '', 'main', 'master']) {
+		const name = pick(branch)
+		if (name) return name
+	}
+	return refs[0].name
 }
