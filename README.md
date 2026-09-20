@@ -1,5 +1,12 @@
 # gib
 
+> **Deprecated.** This TypeScript implementation is superseded by the Go one at
+> [b-open-io/gib](https://github.com/b-open-io/gib), which runs the gib overlay
+> locally, speaks the same on-chain formats, and is the supported `git-remote-gib`.
+> Published on chain as repository origin
+> `6d46f3406ee04d1b9b1379d0c012b6b0bb8ff0bc18f19d4709f9f6cefb94569d_82`.
+> This repository is kept for history only and receives no further work.
+
 On-chain git for BSV. Content is write-once chain outputs; directories are `ordfs/dir`
 inscriptions; branch pointers are sealed push-drop coins ("commit tokens"); gib sits on
 top of local git as the chain codec + pointer/authority layer via a `git-remote-gib`
