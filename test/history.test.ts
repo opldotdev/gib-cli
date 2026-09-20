@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { PrivateKey, ProtoWallet, Script, Transaction, type WalletInterface } from '@bsv/sdk'
-import { commitParents, previousHead } from '../src/remote/history.ts'
+import { commitParents } from '../src/fetch.ts'
+import { previousHead } from '../src/head.ts'
 import { GIT_COMMIT_TYPE, appendOrdEnvelope } from '../src/script.ts'
 import { sealCommitLock } from '../src/seal.ts'
 import { memStore } from './helpers.ts'

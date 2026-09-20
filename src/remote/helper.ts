@@ -8,7 +8,7 @@ import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
 import { advertise, originFromUrl } from './advertise.ts'
 import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
-import { commitParents, importHistory } from './history.ts'
+import { importHistory } from '../fetch.ts'
 import type { TxStore } from '../txstore.ts'
 
 export type HelperIo = {
@@ -148,23 +148,4 @@ async function readUntilBlank(io: HelperIo): Promise<string[]> {
 		lines.push(line.trim())
 	}
 	return lines
-}
-
-export async function importCommit(
-	store: TxStore,
-	gitDir: string,
-	headOutpoint: string,
-): Promise<{ commit: string; tree: string; parents: string[] }> {
-	const op = parseOutpoint(headOutpoint)
-	const tx = await loadTx(store, op.txid)
-	const out = tx.outputs[op.vout]
-	if (!out) throw new Error(`missing head ${headOutpoint}`)
-	const payload = payloadFromScript(out.lockingScript)
-	if (!payload) throw new Error('commit head has no inscription')
-	const token = decodeCommitToken(out.lockingScript)
-	const root = parseOutpoint(token.root)
-	await resolveOutpoint(store, root)
-	const files = await collectTree(store, root)
-	const r = await materializeGit(gitDir, files, payload.bytes)
-	return { ...r, parents: commitParents(payload.bytes) }
 }

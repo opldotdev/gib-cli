@@ -185,6 +185,10 @@ async function publishCommits(
 	let prevTree: Tree | undefined
 	if (opts.prev) {
 		prevTree = await treeFromRoot(opts.store, parseOutpoint(opts.prev.root))
+		// The peer may not have the chain this push continues — a repository
+		// minted by `gib init`, or a peer added later. Send what it lacks
+		// first, so the heads minted below never arrive over a gap.
+		await syncPeer(opts, opts.branch, opts.prev.outpoint)
 	}
 
 	const scratch = await mkdtemp(join(tmpdir(), 'gib-validate-'))
