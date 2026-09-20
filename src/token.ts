@@ -33,6 +33,9 @@ export function branchTag(branch: string): string {
 export const LABEL_PUSH = 'gib push'
 export const LABEL_DELETE = 'gib delete'
 
+/** What git calls a deleted ref. */
+export const NULL_SHA = '0'.repeat(40)
+
 export function commitTag(sha: string): string {
 	return `commit:${sha}`
 }

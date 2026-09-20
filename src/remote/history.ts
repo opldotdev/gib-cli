@@ -9,8 +9,7 @@
  * stays missing and git reports it.
  */
 
-import { decodeCommitToken } from '../token.ts'
-import { loadTx } from '../resolver.ts'
+import { previousHead } from '../head.ts'
 import type { TxStore } from '../txstore.ts'
 import { importCommit } from './helper.ts'
 
@@ -24,37 +23,7 @@ export function commitParents(commit: Uint8Array): string[] {
 		.map((l) => l.slice(7).trim())
 }
 
-/**
- * The head this head spent (same branch chain), or undefined for a genesis
- * or a head whose inputs are not commit tokens.
- */
-export async function previousHead(
-	store: TxStore,
-	headOutpoint: string,
-): Promise<string | undefined> {
-	const [txid, voutStr] = headOutpoint.split('_')
-	const tx = await loadTx(store, txid)
-	if (!tx.outputs[Number(voutStr)]) throw new Error(`missing head ${headOutpoint}`)
-	for (const input of tx.inputs) {
-		const src = input.sourceTXID
-		if (!src) continue
-		let sourceTx: Awaited<ReturnType<typeof loadTx>>
-		try {
-			sourceTx = await loadTx(store, src)
-		} catch {
-			continue
-		}
-		const out = sourceTx.outputs[input.sourceOutputIndex]
-		if (!out) continue
-		try {
-			decodeCommitToken(out.lockingScript)
-		} catch {
-			continue
-		}
-		return `${src}_${input.sourceOutputIndex}`
-	}
-	return undefined
-}
+export { previousHead }
 
 export async function gitHasObject(gitDir: string, sha: string): Promise<boolean> {
 	const proc = Bun.spawn(['git', '--git-dir', gitDir, 'cat-file', '-e', sha], {

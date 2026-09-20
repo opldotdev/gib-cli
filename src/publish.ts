@@ -4,12 +4,13 @@ import {
 	unlockByScript,
 } from '@1sat/actions'
 import {
+	Beef,
 	type CreateActionArgs,
 	type CreateActionResult,
 	Transaction,
 	type WalletInterface,
 } from '@bsv/sdk'
-import type { CommitPlan } from './cascade.ts'
+import type { PlannedOutput } from './cascade.ts'
 import { GIT_COMMIT_TYPE, appendOrdEnvelope, bLockingScript, isProvablyUnspendable } from './script.ts'
 import { commitHeadCustomInstructions, sealCommitLock } from './seal.ts'
 import {
@@ -22,7 +23,16 @@ import {
 	type CommitToken,
 } from './token.ts'
 
-export type PublishedTx = { txid: string; bytes: Uint8Array }
+export type PublishedTx = {
+	txid: string
+	/** Raw signed transaction bytes, for the local store. */
+	bytes: Uint8Array
+	/** BEEF for the transaction with its ancestry, for the peer. */
+	beef: number[]
+}
+
+/** A published head, and which output of its transaction it is. */
+export type PublishedHead = PublishedTx & { vout: number }
 
 export type SpendHead = {
 	outpoint: string
@@ -31,7 +41,11 @@ export type SpendHead = {
 }
 
 export type Publisher = {
-	publishContent(plan: CommitPlan, labels: string[], sha: string): Promise<PublishedTx>
+	publishContent(
+		outputs: PlannedOutput[],
+		labels: string[],
+		sha: string,
+	): Promise<PublishedTx>
 	publishHead(opts: {
 		token: CommitToken
 		commitBytes: Uint8Array
@@ -39,15 +53,40 @@ export type Publisher = {
 		labels: string[]
 		tags: string[]
 		spend?: SpendHead
-	}): Promise<PublishedTx>
+	}): Promise<PublishedHead>
 	burnHead(opts: SpendHead & { labels: string[] }): Promise<PublishedTx>
 }
 
 function rawTxFromResult(r: CreateActionResult): PublishedTx {
 	if (!r.txid) throw new Error('createAction returned no txid')
 	if (!r.tx?.length) throw new Error('createAction returned no tx bytes')
-	const tx = Transaction.fromBEEF(Array.from(r.tx))
-	return { txid: r.txid, bytes: new Uint8Array(tx.toBinary()) }
+	return published(r.txid, Array.from(r.tx))
+}
+
+/**
+ * The wallet hands back BEEF (atomic or not). Keep both forms: raw bytes
+ * for the local store, and a plain BEEF with the ancestry for the peer and
+ * for spending the output later.
+ */
+export function published(txid: string, beef: number[]): PublishedTx {
+	const parsed = Beef.fromBinary(beef)
+	const tx = parsed.findAtomicTransaction(txid) ?? parsed.findTxid(txid)?.tx
+	if (!tx) throw new Error(`wallet BEEF does not contain ${txid}`)
+	const plain = new Beef()
+	plain.mergeBeef(parsed)
+	return {
+		txid,
+		bytes: new Uint8Array(tx.toBinary()),
+		beef: plain.toBinary(),
+	}
+}
+
+/** Which output of a transaction carries a locking script. */
+function voutOfScript(bytes: Uint8Array, hex: string): number {
+	const tx = Transaction.fromBinary(Array.from(bytes))
+	const vout = tx.outputs.findIndex((o) => o.lockingScript.toHex() === hex)
+	if (vout < 0) throw new Error('published transaction has no commit head')
+	return vout
 }
 
 async function unlockPushDrop(
@@ -84,8 +123,7 @@ async function unlockPushDrop(
 	if (done.error || !done.txid || !done.tx) {
 		throw new Error(done.error ?? 'signAction returned no tx')
 	}
-	const signedTx = Transaction.fromBEEF(Array.from(done.tx))
-	return { txid: done.txid, bytes: new Uint8Array(signedTx.toBinary()) }
+	return published(done.txid, Array.from(done.tx))
 }
 
 /**
@@ -112,8 +150,8 @@ async function walletCall<T>(what: string, run: () => Promise<T>): Promise<T> {
 
 export function walletPublisher(wallet: WalletInterface): Publisher {
 	return {
-		async publishContent(plan, labels, sha) {
-			const outputs = plan.outputs.map((o, i) => {
+		async publishContent(planned, labels, sha) {
+			const outputs = planned.map((o, i) => {
 				const script = bLockingScript(o.contentType, o.bytes)
 				if (!isProvablyUnspendable(script)) {
 					throw new Error(`refusing to publish a zero-sat output miners would treat as dust: ${o.path ?? i}`)
@@ -142,6 +180,7 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			}
 			const pd = await sealCommitLock(wallet, opts.token)
 			const locking = appendOrdEnvelope(pd, GIT_COMMIT_TYPE, opts.commitBytes)
+			const lockingHex = locking.toHex()
 			const args: CreateActionArgs = {
 				description: pushDescription('head', opts.sha),
 				...(opts.spend ? { inputBEEF: opts.spend.beef } : {}),
@@ -156,7 +195,7 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 					: undefined,
 				outputs: [
 					{
-						lockingScript: locking.toHex(),
+						lockingScript: lockingHex,
 						satoshis: 1,
 						outputDescription: 'gib commit head',
 						basket: GIB_BASKET,
@@ -171,15 +210,20 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			}
 			stampManagedOutputIds(args)
 			const r = await walletCall('createAction (head)', () => wallet.createAction(args))
-			if (r.txid) return rawTxFromResult(r)
-			if (!opts.spend) throw new Error('unexpected createAction response for commit head')
-			return unlockPushDrop(
-				wallet,
-				opts.spend.keyID,
-				opts.spend.outpoint,
-				opts.spend.beef,
-				r,
-			)
+			const head = r.txid
+				? rawTxFromResult(r)
+				: opts.spend
+					? await unlockPushDrop(
+							wallet,
+							opts.spend.keyID,
+							opts.spend.outpoint,
+							opts.spend.beef,
+							r,
+						)
+					: (() => {
+							throw new Error('unexpected createAction response for commit head')
+						})()
+			return { ...head, vout: voutOfScript(head.bytes, lockingHex) }
 		},
 		async burnHead(opts) {
 			const r = await walletCall('createAction (burn)', () =>

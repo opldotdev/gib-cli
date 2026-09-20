@@ -101,3 +101,27 @@ export function parsePushLine(line: string): {
 	const dst = s.slice(i + 1)
 	return { force, src, dst, del: src === '' }
 }
+
+/**
+ * Commits to publish: everything reachable from `tip` that is not already
+ * reachable from a commit some head already publishes, oldest first. That
+ * ordering is the order the heads are minted in, so the spend chain and
+ * the commit history run the same way.
+ */
+export async function revList(
+	gitDir: string,
+	tip: string,
+	have: string[] = [],
+	limit = 100_000,
+): Promise<string[]> {
+	const args = ['rev-list', '--reverse', '--topo-order', `--max-count=${limit}`, tip]
+	for (const h of have) args.push(`^${h}`)
+	const r = await git(gitDir, args)
+	if (r.code !== 0) throw new Error(`git rev-list ${tip}: ${r.err.trim()}`)
+	return r.out.split('\n').map((l) => l.trim()).filter(Boolean)
+}
+
+/** True when git has the object. */
+export async function hasObject(gitDir: string, sha: string): Promise<boolean> {
+	return (await git(gitDir, ['cat-file', '-e', `${sha}^{commit}`])).code === 0
+}

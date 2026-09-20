@@ -1,15 +1,22 @@
 import { Transaction } from '@bsv/sdk'
-import type { CommitPlan } from './cascade.ts'
+import type { PlannedOutput } from './cascade.ts'
 import { bLockingScript } from './script.ts'
 import type { Outpoint } from './outpoint.ts'
 import type { TxStore } from './txstore.ts'
 
+/**
+ * The content transaction as it will be, before the wallet funds it: the
+ * planned outputs in order, which is the order the wallet keeps
+ * (`randomizeOutputs: false`), so every vout a manifest names is already
+ * right. Its txid is not the real one, so the store layered here is only
+ * good for reading this tree back and checking it against the commit.
+ */
 export function previewContentStore(
-	plan: CommitPlan,
+	outputs: PlannedOutput[],
 	backing: TxStore,
-): { store: TxStore; root: Outpoint; bytes: Uint8Array } {
+): { store: TxStore; txid: string; bytes: Uint8Array } {
 	const tx = new Transaction()
-	for (const o of plan.outputs) {
+	for (const o of outputs) {
 		tx.addOutput({
 			satoshis: 0,
 			lockingScript: bLockingScript(o.contentType, o.bytes),
@@ -26,5 +33,10 @@ export function previewContentStore(
 			return backing.put(id, b)
 		},
 	}
-	return { store, root: { txid, vout: plan.rootIndex }, bytes }
+	return { store, txid, bytes }
+}
+
+/** Where a planned root sits in the preview transaction. */
+export function previewRoot(txid: string, rootIndex: number): Outpoint {
+	return { txid, vout: rootIndex }
 }
