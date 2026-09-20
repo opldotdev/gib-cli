@@ -2,7 +2,7 @@
 import { createInterface } from 'node:readline/promises'
 import { DEFAULT_PEER_HOST, gibInit } from './init.ts'
 import { loadIdentity } from './identity.ts'
-import { loadRepoState } from './refs.ts'
+import { loadRepoState, saveRepoState } from './refs.ts'
 import { GIB_FILE, type RepoMeta } from './repo-meta.ts'
 import { peerFor } from './remote/peer.ts'
 import { parseGibUrl } from './remote/url.ts'
@@ -109,7 +109,6 @@ if (cmd === 'sync') {
 		const store = fileTxStore(home, peerFetchRawTx(peer))
 		const state = await loadRepoState(parsed.origin, home)
 		const added = await pullRepo(peer, store, state)
-		const { saveRepoState } = await import('./refs.ts')
 		await saveRepoState(state, home)
 		process.stdout.write(`${added} new head(s)\n`)
 		for (const r of Object.values(state.refs)) {
