@@ -165,4 +165,36 @@ describe('push: one head per commit', () => {
 			error: 'no such ref',
 		})
 	})
+
+	it('reuses the content of an interrupted push instead of paying twice', async () => {
+		const { fake, repo, base } = await setup()
+		const genesis = await mintGenesis({ ...base, rev: 'HEAD', branch: 'main' })
+		await commitFiles(repo.dir, { 'README.md': '# v2\n' }, 'v2')
+
+		// The content goes out, then the head mint fails.
+		const failing = {
+			...base.publisher,
+			publishHead: async () => {
+				throw new Error('wallet went away')
+			},
+		}
+		const failed = await pushLine('push HEAD:refs/heads/main', {
+			...base,
+			origin: genesis.origin,
+			publisher: failing,
+		})
+		expect(failed.ok).toBe(false)
+		const contentActions = () =>
+			fake.actionLog().filter((a) => a.description.startsWith('gib content'))
+		expect(contentActions()).toHaveLength(2) // the genesis and this one
+
+		const retried = await pushLine('push HEAD:refs/heads/main', {
+			...base,
+			origin: genesis.origin,
+		})
+		expect(retried.ok).toBe(true)
+		if (retried.ok) expect(retried.minted).toBe(1)
+		// No second content transaction: the interrupted one was reused.
+		expect(contentActions()).toHaveLength(2)
+	})
 })

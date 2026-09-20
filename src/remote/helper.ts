@@ -40,8 +40,6 @@ export type HelperIo = {
 
 export type HelperOptions = {
 	url: string
-	/** Remote name git invoked us with. */
-	remoteName?: string
 	store: TxStore
 	/** The peer the URL names, when it names one. */
 	peer?: Peer

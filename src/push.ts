@@ -202,12 +202,12 @@ async function publishCommits(
 			labels: [LABEL_PUSH],
 			scratchGitDir: scratch,
 			pending: await loadPending(opts.sha, opts.home),
+			onContent: (txs) => savePending(opts.sha, txs, opts.home),
 			log: opts.log,
 		})
 	} finally {
 		await rm(scratch, { recursive: true, force: true })
 	}
-	await savePending(opts.sha, content.txs, opts.home)
 
 	let origin = opts.origin
 	if (!origin) {

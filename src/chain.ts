@@ -64,6 +64,8 @@ export type ChainOptions = {
 	pending?: PublishedTx[]
 	/** Outputs one content transaction may carry. */
 	maxOutputs?: number
+	/** Called after each content transaction, to record it for a retry. */
+	onContent?: (txs: PublishedTx[]) => Promise<void>
 	log?: (s: string) => void
 }
 
@@ -114,6 +116,9 @@ export async function publishChain(
 		}
 		await opts.store.put(tx.txid, tx.bytes)
 		txs.push(tx)
+		// Record it now, not at the end: a push interrupted after this
+		// transaction must not pay to publish the same content again.
+		await opts.onContent?.([...txs])
 		for (const c of pendingCommits) {
 			roots.set(c.sha, { txid: tx.txid, vout: c.rootIndex })
 		}

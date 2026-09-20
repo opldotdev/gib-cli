@@ -1,7 +1,6 @@
 import { Transaction } from '@bsv/sdk'
 import type { PlannedOutput } from './cascade.ts'
 import { bLockingScript } from './script.ts'
-import type { Outpoint } from './outpoint.ts'
 import type { TxStore } from './txstore.ts'
 
 /**
@@ -34,9 +33,4 @@ export function previewContentStore(
 		},
 	}
 	return { store, txid, bytes }
-}
-
-/** Where a planned root sits in the preview transaction. */
-export function previewRoot(txid: string, rootIndex: number): Outpoint {
-	return { txid, vout: rootIndex }
 }
