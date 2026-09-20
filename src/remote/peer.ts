@@ -111,9 +111,16 @@ export class Peer {
 				`remote lookup ${url}: ${e instanceof Error ? e.message : e}`,
 			)
 		}
-		const text = (await res.text()).slice(0, MAX_ANSWER)
+		const text = await res.text()
 		if (!res.ok) {
-			throw new Error(`remote lookup: HTTP ${res.status}: ${text.trim()}`)
+			throw new Error(
+				`remote lookup: HTTP ${res.status}: ${text.slice(0, 4096).trim()}`,
+			)
+		}
+		if (text.length > MAX_ANSWER) {
+			throw new Error(
+				`remote lookup: answer is ${text.length} bytes, over the ${MAX_ANSWER} limit`,
+			)
 		}
 		let answer: RawAnswer
 		try {

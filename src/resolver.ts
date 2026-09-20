@@ -13,7 +13,7 @@ import {
 	patchApply,
 	patchDecode,
 } from './ordfs/patch.ts'
-import { formatOutpoint, type Outpoint, parseOutpoint } from './outpoint.ts'
+import { formatOutpoint, type Outpoint } from './outpoint.ts'
 import type { TxStore } from './txstore.ts'
 
 export const MAX_DIRECTORY_DEPTH = 8
@@ -127,8 +127,4 @@ async function walkEntry(
 		throw new ResolveError(`not a directory: ${dirNameString(entry.name)}`)
 	}
 	return resolveOutpoint(store, child)
-}
-
-export function parseRoot(s: string): Outpoint {
-	return parseOutpoint(s)
 }

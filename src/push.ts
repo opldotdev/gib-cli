@@ -34,7 +34,6 @@ import { recoverPush } from './recovery.ts'
 import { previousHead } from './head.ts'
 import { atomicWithExtras } from './remote/beef.ts'
 import { MAX_PAGES, type Peer } from './remote/peer.ts'
-import { loadTx } from './resolver.ts'
 import {
 	branchTag,
 	decodeCommitToken,
@@ -60,6 +59,12 @@ export type PushOptions = {
 	peer?: Peer
 	/** Commit shas already published on this repository, of any branch. */
 	have?: string[]
+	/**
+	 * The head this client believes the branch has, when it knows of one.
+	 * Used only to refuse restarting a branch as a second, unparented
+	 * chain when the wallet cannot find the head it should spend.
+	 */
+	knownHead?: (branch: string) => string | undefined
 	home?: string
 	log?: (s: string) => void
 }
@@ -111,6 +116,16 @@ export async function pushLine(
 		if (spec.del) return await burnRef(opts, spec.dst, branch)
 		const sha = await revParse(opts.gitDir, spec.src)
 		const prev = await currentHead(opts, branch)
+		const known = opts.knownHead?.(branch)
+		if (!prev && known) {
+			// Minting here would start a second chain for this branch under
+			// the same identity, with nothing spending the existing head:
+			// two tips, no ancestry, and no way for a reader to tell which
+			// is the branch. The wallet has to be repaired first.
+			throw new Error(
+				`the wallet holds no spendable head for ${branch}, but ${known} is its current head: pushing now would start a second chain`,
+			)
+		}
 		if (prev?.sha === sha) {
 			// Already published under this identity — a retry, or a push to a
 			// second peer. Nothing is built; the peer catches up.
@@ -298,17 +313,19 @@ async function syncPeer(
 		cursor = await previousHead(opts.store, cursor).catch(() => undefined)
 	}
 	for (const outpoint of missing.reverse()) {
-		const { txid } = parseOutpoint(outpoint)
-		const bytes = await opts.store.get(txid)
-		if (!bytes) throw new Error(`sync: ${txid} is not in the local store`)
-		const tx = await loadTx(opts.store, txid)
-		const token = decodeCommitToken(tx.outputs[parseOutpoint(outpoint).vout].lockingScript)
+		const op = parseOutpoint(outpoint)
+		const bytes = await opts.store.get(op.txid)
+		if (!bytes) throw new Error(`sync: ${op.txid} is not in the local store`)
+		const tx = Transaction.fromBinary(Array.from(bytes))
+		const out = tx.outputs[op.vout]
+		if (!out) throw new Error(`sync: ${outpoint} is not an output`)
+		const token = decodeCommitToken(out.lockingScript)
 		const beefs: Array<number[] | Uint8Array> = [rawBeef(bytes)]
 		const rootTxid = parseOutpoint(token.root).txid
 		const rootBytes =
-			rootTxid === txid ? undefined : await opts.store.get(rootTxid)
+			rootTxid === op.txid ? undefined : await opts.store.get(rootTxid)
 		if (rootBytes) beefs.push(rawBeef(rootBytes))
-		await opts.peer.submit(atomicWithExtras(beefs, txid))
+		await opts.peer.submit(atomicWithExtras(beefs, op.txid))
 	}
 }
 

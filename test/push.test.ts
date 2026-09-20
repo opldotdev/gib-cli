@@ -197,4 +197,25 @@ describe('push: one head per commit', () => {
 		// No second content transaction: the interrupted one was reused.
 		expect(contentActions()).toHaveLength(2)
 	})
+
+	it('refuses to start a second chain when the wallet lost the head', async () => {
+		const { base } = await setup()
+		const genesis = await mintGenesis({ ...base, rev: 'HEAD', branch: 'main' })
+		const blind = {
+			...base,
+			// A wallet that cannot find the head it should spend: storage
+			// reset, basket pruned, a bad listOutputs.
+			wallet: {
+				...base.wallet,
+				listOutputs: async () => ({ totalOutputs: 0, outputs: [] }),
+			} as typeof base.wallet,
+		}
+		const r = await pushLine('push HEAD:refs/heads/main', {
+			...blind,
+			origin: genesis.origin,
+			knownHead: () => genesis.head,
+		})
+		expect(r.ok).toBe(false)
+		if (!r.ok) expect(r.error).toContain('would start a second chain')
+	})
 })

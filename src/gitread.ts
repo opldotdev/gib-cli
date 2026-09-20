@@ -72,6 +72,14 @@ export async function filesAtCommit(gitDir: string, sha: string): Promise<Incomi
 		const meta = rec.slice(0, tab)
 		const path = rec.slice(tab + 1)
 		const [mode, type, blob] = meta.split(' ')
+		if (type === 'commit') {
+			// A gitlink has no bytes to publish. Saying so here beats the
+			// tree-mismatch error the push would otherwise die of, which
+			// names neither submodules nor the path.
+			throw new Error(
+				`${path} is a submodule (gitlink); gib cannot publish submodules`,
+			)
+		}
 		if (type !== 'blob') continue
 		const blobR = await gitBytes(gitDir, ['cat-file', 'blob', blob])
 		if (blobR.code !== 0) throw new Error(`git cat-file blob ${blob}: ${blobR.err.trim()}`)

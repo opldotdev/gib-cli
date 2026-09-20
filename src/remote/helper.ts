@@ -22,6 +22,7 @@ import {
 	forgetHead,
 	loadRepoState,
 	recordHead,
+	refKey,
 	type RepoState,
 	saveRepoState,
 } from '../refs.ts'
@@ -157,6 +158,7 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 					identity,
 					peer: opts.peer,
 					have: ourShas(state, identity),
+					knownHead: (branch) => state.refs[refKey(identity, branch)]?.head,
 					home: opts.home,
 					log,
 				})

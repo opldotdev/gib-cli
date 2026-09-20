@@ -270,11 +270,15 @@ export async function planCommit(opts: {
 			const name = dirName(basename(path))
 			if (dirs.has(path)) {
 				const ref = dirRef.get(path)
-				if (ref) entries.push({ name, isDir: true, ref })
+				// Children are planned before their parent, so this is a
+				// bug rather than a case: dropping the entry silently would
+				// publish a tree missing a whole subdirectory.
+				if (!ref) throw new Error(`cascade: no reference for directory ${path}`)
+				entries.push({ name, isDir: true, ref })
 				continue
 			}
 			const ref = fileRef.get(path)
-			if (!ref) continue
+			if (!ref) throw new Error(`cascade: no reference for file ${path}`)
 			const file = opts.files.find((x) => x.path === path)
 			entries.push({
 				name,
@@ -310,7 +314,7 @@ export async function planCommit(opts: {
 				},
 			]),
 		),
-		dirs: new Map([...dirRef].filter(([d]) => dirs.has(d))),
+		dirs: new Map(dirRef),
 	}
 	return { outputs, rootIndex: root.vout, tree }
 }
