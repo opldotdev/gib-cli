@@ -133,4 +133,40 @@ describe('publishing a chain of commits', () => {
 			.filter(Boolean)
 		expect(types).toContain(PATCH_CONTENT_TYPE)
 	})
+
+	it('refuses a wallet that hands back different outputs', async () => {
+		const repo = await tempRepo({ 'a.txt': 'a' })
+		trash.push(repo.dir)
+		const fake = await FakeWallet.create(new PrivateKey(4242))
+		const scratch = await mkdtemp(join(tmpdir(), 'gib-scratch-'))
+		trash.push(scratch)
+		const honest = walletPublisher(fake.asWallet())
+		const { Transaction } = await import('@bsv/sdk')
+		const shuffling = {
+			...honest,
+			// A wallet that reorders outputs makes every same-transaction
+			// reference in every manifest point at the wrong output.
+			publishContent: async (...args: Parameters<typeof honest.publishContent>) => {
+				const tx = await honest.publishContent(...args)
+				const parsed = Transaction.fromBinary(Array.from(tx.bytes))
+				parsed.outputs.reverse()
+				return { ...tx, bytes: new Uint8Array(parsed.toBinary()) }
+			},
+		}
+		expect(
+			publishChain({
+				commits: [
+					{
+						sha: repo.sha,
+						commit: await commitBytes(repo.gitDir, repo.sha),
+						files: await filesAtCommit(repo.gitDir, repo.sha),
+					},
+				],
+				store: memStore(),
+				publisher: shuffling,
+				labels: ['gib push'],
+				scratchGitDir: scratch,
+			}),
+		).rejects.toThrow(/without the planned outputs in order/)
+	})
 })

@@ -113,6 +113,15 @@ export async function publishChain(
 		if (reuse) {
 			reused++
 			opts.log?.(`gib: reusing content transaction ${reuse.txid}\n`)
+		} else if (!carriesOutputs(tx, pendingOutputs)) {
+			// Every same-transaction reference in every manifest just
+			// planned is a raw vout. A wallet that reordered the outputs,
+			// or put change anywhere but last, would leave every directory
+			// pointing at the wrong thing — and the push would report
+			// success. Refuse before any of it is used.
+			throw new Error(
+				`wallet returned ${tx.txid} without the planned outputs in order (randomizeOutputs must be honoured)`,
+			)
 		}
 		await opts.store.put(tx.txid, tx.bytes)
 		txs.push(tx)
@@ -157,27 +166,37 @@ export async function publishChain(
 }
 
 /**
+ * True when a transaction carries exactly these outputs, in order, from
+ * vout 0. The wallet's change output sits after them.
+ */
+function carriesOutputs(
+	published: PublishedTx,
+	outputs: PlannedOutput[],
+): boolean {
+	let tx: Transaction
+	try {
+		tx = Transaction.fromBinary(Array.from(published.bytes))
+	} catch {
+		return false
+	}
+	if (tx.outputs.length < outputs.length) return false
+	for (let i = 0; i < outputs.length; i++) {
+		const want = bLockingScript(outputs[i].contentType, outputs[i].bytes).toHex()
+		if (tx.outputs[i].lockingScript.toHex() !== want) return false
+	}
+	return true
+}
+
+/**
  * A content transaction from an interrupted push is reused only when it
- * carries exactly the outputs now planned, in order. The wallet's change
- * output sits after them.
+ * carries exactly the outputs now planned, in order.
  */
 function matchPending(
 	candidate: PublishedTx | undefined,
 	outputs: PlannedOutput[],
 ): PublishedTx | undefined {
 	if (!candidate) return undefined
-	let tx: Transaction
-	try {
-		tx = Transaction.fromBinary(Array.from(candidate.bytes))
-	} catch {
-		return undefined
-	}
-	if (tx.outputs.length < outputs.length) return undefined
-	for (let i = 0; i < outputs.length; i++) {
-		const want = bLockingScript(outputs[i].contentType, outputs[i].bytes).toHex()
-		if (tx.outputs[i].lockingScript.toHex() !== want) return undefined
-	}
-	return candidate
+	return carriesOutputs(candidate, outputs) ? candidate : undefined
 }
 
 /**
