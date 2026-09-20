@@ -18,6 +18,7 @@ import { loadIdentity, saveIdentity } from '../identity.ts'
 import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
 import {
+	emptyRepoState,
 	forgetHead,
 	loadRepoState,
 	recordHead,
@@ -63,22 +64,36 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 	const state = await loadRepoState(origin, opts.home)
 	let identity = await loadIdentity(opts.home)
 
-	const refresh = async (): Promise<Ref[]> => {
-		if (opts.peer) {
-			try {
-				const added = await pullRepo(
-					opts.peer,
-					opts.store,
-					state,
-					opts.localBranches ?? [],
-				)
-				if (added > 0) log(`gib: fetched ${added} head(s) from the remote\n`)
-			} catch (e) {
-				log(`gib: ${e instanceof Error ? e.message : e}\n`)
+	/**
+	 * Refresh from the peer and advertise.
+	 *
+	 * For a push it is the *peer's* own view that git must compare against,
+	 * not everything this client knows: a head minted here and never sent
+	 * (a repository straight out of `gib init`, or a second remote added
+	 * later) would otherwise look to git like something the remote already
+	 * has, and git would send nothing. So the peer's answer is collected
+	 * into a state of its own, and merged into ours afterwards.
+	 */
+	const refresh = async (forPush = false): Promise<Ref[]> => {
+		if (!opts.peer) return advertise(state, identity)
+		const view = forPush ? emptyRepoState(origin) : state
+		if (forPush) view.branches = [...state.branches]
+		try {
+			const added = await pullRepo(
+				opts.peer,
+				opts.store,
+				view,
+				opts.localBranches ?? [],
+			)
+			if (added > 0 && !forPush) {
+				log(`gib: fetched ${added} head(s) from the remote\n`)
 			}
-			await saveRepoState(state, opts.home)
+		} catch (e) {
+			log(`gib: ${e instanceof Error ? e.message : e}\n`)
 		}
-		return advertise(state, identity)
+		if (forPush) mergeState(state, view)
+		await saveRepoState(state, opts.home)
+		return advertise(view, identity)
 	}
 
 	for (;;) {
@@ -91,7 +106,7 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 			continue
 		}
 		if (cmd === 'list' || cmd === 'list for-push') {
-			const refs = await refresh()
+			const refs = await refresh(cmd === 'list for-push')
 			for (const r of refs) opts.io.write(`${r.sha} ${r.name}\n`)
 			const head = chooseHead(refs, state, identity)
 			if (head) opts.io.write(`@${head} HEAD\n`)
@@ -124,7 +139,7 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 				opts.io.write('\n')
 				continue
 			}
-			await refresh()
+			await refresh(true)
 			const publisher = opts.publisher ?? walletPublisher(wallet)
 			for (const l of lines) {
 				const r = await pushLine(l, {
@@ -161,6 +176,14 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 			continue
 		}
 		throw new Error(`git-remote-gib: unsupported command ${cmd}`)
+	}
+}
+
+/** Fold a peer's view of a repository into what this client keeps. */
+function mergeState(state: RepoState, view: RepoState): void {
+	for (const r of Object.values(view.refs)) recordHead(state, r)
+	for (const [branch, cursor] of Object.entries(view.cursors)) {
+		state.cursors[branch] = cursor
 	}
 }
 
