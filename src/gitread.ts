@@ -32,9 +32,20 @@ export async function revParse(gitDir: string, rev: string): Promise<string> {
 	return r.out.trim()
 }
 
+/**
+ * True when `anc` is an ancestor of `desc`. git exits 1 for "no" and 128
+ * for "I have never heard of that commit" — which happens when the head
+ * the wallet holds publishes a commit this clone does not have. Reporting
+ * that as "not an ancestor" would tell the user their push is a
+ * non-fast-forward when it is nothing of the kind.
+ */
 export async function isAncestor(gitDir: string, anc: string, desc: string): Promise<boolean> {
 	const r = await git(gitDir, ['merge-base', '--is-ancestor', anc, desc])
-	return r.code === 0
+	if (r.code === 0) return true
+	if (r.code === 1) return false
+	throw new Error(
+		`this clone does not have commit ${anc}, which the branch's current head publishes: ${r.err.trim()}`,
+	)
 }
 
 export async function commitBytes(gitDir: string, sha: string): Promise<Uint8Array> {

@@ -22,7 +22,7 @@ import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
 import { recordHead, type RepoState } from '../refs.ts'
 import { loadTx, resolvePath } from '../resolver.ts'
 import type { TxStore } from '../txstore.ts'
-import { MAX_TXIDS, type Peer, SyncBrokenError } from './peer.ts'
+import { MAX_PAGES, MAX_TXIDS, type Peer, SyncBrokenError } from './peer.ts'
 
 /** Branch names tried when nothing better is known about a repository. */
 export const CONVENTIONAL_BRANCHES = ['main', 'master']
@@ -46,7 +46,12 @@ export async function pullBranch(
 ): Promise<number> {
 	let since = state.cursors[branch] ?? ''
 	let added = 0
-	for (;;) {
+	for (let page1 = 0; ; page1++) {
+		if (page1 >= MAX_PAGES) {
+			throw new Error(
+				`branch ${branch}: the peer is still offering more heads after ${MAX_PAGES} pages`,
+			)
+		}
 		let page: Awaited<ReturnType<Peer['headsSince']>>
 		try {
 			page = await peer.headsSince({ origin: state.origin, branch, since })
@@ -62,7 +67,16 @@ export async function pullBranch(
 			throw e
 		}
 		for (const h of page.heads) {
-			await absorbBeef(store, h.beef)
+			const stored = await absorbBeef(store, h.beef)
+			const txid = parseOutpoint(h.outpoint).txid
+			if (!stored.includes(txid)) {
+				// The outpoints are index-aligned with the outputs; a peer
+				// whose BEEF does not hold the head it is answering about
+				// has given us something we cannot use.
+				throw new Error(
+					`the peer's BEEF for head ${h.outpoint} does not contain ${txid}`,
+				)
+			}
 			const head = await readHead(store, h.outpoint)
 			if (head.token.origin !== state.origin || head.token.branch !== branch) {
 				continue
@@ -78,7 +92,11 @@ export async function pullBranch(
 			added++
 		}
 		if (!page.more || page.heads.length === 0) return added
-		since = page.heads[page.heads.length - 1].outpoint
+		const next = page.heads[page.heads.length - 1].outpoint
+		if (next === since) {
+			throw new Error(`branch ${branch}: the peer is not advancing past ${since}`)
+		}
+		since = next
 	}
 }
 

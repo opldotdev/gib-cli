@@ -176,4 +176,28 @@ describe('remote helper', () => {
 		)
 		expect(await new Response(proc.stdout).text()).toBe('commit\n')
 	})
+
+	it('finishes the conversation when a fetch cannot be served', async () => {
+		const { base } = await initialised()
+		const logged: string[] = []
+		const out = await converse([`fetch ${'a'.repeat(40)} refs/heads/main`], {
+			...base,
+			log: (s) => logged.push(s),
+		})
+		// The blank line is what tells git the batch is over; dying here
+		// makes git report a helper that crashed.
+		expect(out).toBe('\n')
+		expect(logged.join('')).toContain('no head on')
+	})
+
+	it('ignores a command it does not serve', async () => {
+		const { base } = await initialised()
+		const logged: string[] = []
+		const out = await converse(['option verbosity 2', 'capabilities'], {
+			...base,
+			log: (s) => logged.push(s),
+		})
+		expect(out).toBe('fetch\npush\n\n')
+		expect(logged.join('')).toContain('unsupported command')
+	})
 })

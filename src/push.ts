@@ -33,7 +33,7 @@ import { headTags, type Publisher, type PublishedTx, type SpendHead } from './pu
 import { recoverPush } from './recovery.ts'
 import { previousHead } from './head.ts'
 import { atomicWithExtras } from './remote/beef.ts'
-import type { Peer } from './remote/peer.ts'
+import { MAX_PAGES, type Peer } from './remote/peer.ts'
 import { loadTx } from './resolver.ts'
 import {
 	branchTag,
@@ -277,16 +277,18 @@ async function syncPeer(
 	if (!opts.peer) return
 	const seen = new Set<string>()
 	let since = ''
-	for (;;) {
-		const page = await opts.peer.headsSince({
+	for (let page = 0; page < MAX_PAGES; page++) {
+		const answer = await opts.peer.headsSince({
 			origin: opts.origin,
 			branch,
 			identity: opts.identity,
 			since,
 		})
-		for (const h of page.heads) seen.add(h.outpoint)
-		if (!page.more || page.heads.length === 0) break
-		since = page.heads[page.heads.length - 1].outpoint
+		for (const h of answer.heads) seen.add(h.outpoint)
+		if (!answer.more || answer.heads.length === 0) break
+		const next = answer.heads[answer.heads.length - 1].outpoint
+		if (next === since) break
+		since = next
 	}
 	// Walk our own chain back from the tip to the first head the peer has.
 	const missing: string[] = []

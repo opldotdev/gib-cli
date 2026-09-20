@@ -27,6 +27,12 @@ import { type GibUrl, isRemote } from './url.ts'
 
 /** Most heads one headsSince page can carry (the overlay's MaxLimit). */
 export const MAX_HEADS_SINCE = 100
+/**
+ * Most pages one branch walk will take. A peer that keeps saying `more`
+ * without advancing would otherwise spin for ever; at 100 heads a page
+ * this is a million commits, which is not a branch anyone is pushing.
+ */
+export const MAX_PAGES = 10_000
 /** Most transactions one txs request may ask for; over it, it is rejected. */
 export const MAX_TXIDS = 50
 

@@ -115,7 +115,15 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 			const lines = [cmd, ...(await readUntilBlank(opts.io))]
 			for (const l of lines) {
 				const [, sha, ref] = l.split(' ')
-				await fetchRef(opts, state, identity, sha, ref ?? '', log)
+				try {
+					await fetchRef(opts, state, identity, sha, ref ?? '', log)
+				} catch (e) {
+					// Leaving the conversation mid-protocol makes git report
+					// a helper that died. Say what went wrong and finish the
+					// batch; git will notice the objects it wanted are
+					// missing and say so in its own words.
+					log(`gib: fetch ${sha.slice(0, 12)}: ${oneLine(e)}\n`)
+				}
 			}
 			await saveRepoState(state, opts.home)
 			opts.io.write('\n')
@@ -173,7 +181,9 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 			opts.io.write('\n')
 			continue
 		}
-		throw new Error(`git-remote-gib: unsupported command ${cmd}`)
+		// Only fetch and push are advertised, so git should never send
+		// anything else; if it does, ignoring the line beats dying.
+		log(`gib: ignoring unsupported command ${cmd}\n`)
 	}
 }
 
@@ -200,9 +210,7 @@ async function fetchRef(
 		head = headFor(state, identity, sha, ref)
 	}
 	if (!head) {
-		throw new Error(
-			`git-remote-gib: no head on ${state.origin} publishes commit ${sha}`,
-		)
+		throw new Error(`no head on ${state.origin} publishes commit ${sha}`)
 	}
 	const imported = await importHistory(opts.store, opts.gitDir, head, {
 		peer: opts.peer,
