@@ -8,20 +8,44 @@
 > This repository is kept for history only and receives no further work.
 
 On-chain git for BSV. Content is write-once chain outputs; directories are `ordfs/dir`
-inscriptions; a branch is a chain of sealed push-drop coins ("commit heads"). gib sits
-on top of local git as the chain codec plus pointer/authority layer, via a
+manifests; a branch is a chain of sealed push-drop coins ("commit heads"), one per push.
+gib sits on top of local git as the chain codec plus pointer/authority layer, via a
 `git-remote-gib` remote helper. Git stays git — only push and fetch touch the chain.
 
 ## The model
 
-**One head per commit.** A push of N commits mints N head tokens, each spending the
-one before it, each carrying its own commit object and its own root tree. The branch's
-spend chain *is* the commit history, so a fetch walks it back with no gaps. The content
-for all N commits goes out first, in as few transactions as it fits in.
+**One head per push.** A push mints a single head token, spending the branch's previous
+head. Commits are hash-linked, so a signature over the tip commits to every ancestor: a
+head per commit would buy nothing and cost a transaction each.
 
-**The published tree is git's tree.** A commit's tree resolves, byte for byte, to the
-tree sha the commit names — checked on every push before anything is minted, and again
-on every fetch. Nothing extra is published in it.
+**The published root is git's tree, plus `.git`.** One extra entry on the root holds the
+repository's own object store, keyed by sha: every commit object reachable from the tip,
+and every one of those commits' trees. Strip that entry and what is left is byte for
+byte the tree git hashed, which is why the commit still verifies — see `stripGitDir`,
+the only place the model bends.
+
+The store holds ancestors' *trees* and not only their commit objects because git will
+not accept a history without them: its connectivity check walks commit to tree to blob,
+so a fetch missing one ancestor tree is a fetch git rejects. It also carries a `.`
+default entry aliasing the tip commit object, which is how a reader learns which commit
+a head publishes without reading the whole store.
+
+**Names are shas, so nothing is published twice.** A commit or a tree already on chain
+is cited at the outpoint holding it, exactly like an unchanged file. Branching from
+someone else's head therefore copies none of their objects, and an incremental fetch
+skips every name git already has.
+
+**The head token** is a bare 1-satoshi PushDrop — nothing is inscribed beside it:
+fields `["gib", <repository origin>, <branch>, <root>, <identity>, <branched from>]`,
+protocol `[1, "gib branch"]`, keyID = the root outpoint, counterparty `anyone`, basket
+`gib`, labels `gib push` / `gib delete`, tags `origin:<o>`, `branch:<n>`,
+`commit:<sha>`, `randomizeOutputs: false`.
+
+The sixth field is empty on an ordinary push, set on a branch's first head (naming the
+head it forked from) and on a merge (naming a head publishing the second parent, while
+the spend covers the first). A head's parents mirror its commit's parents by
+construction. The five-field heads with an inscribed commit that gib published before
+this are a different format and do not decode: a clean break, no compatibility path.
 
 **The client holds no overlay.** No engine, no database, no topic manager, no chain
 tracker; the client never validates a merkle proof. It keeps the transactions it has
@@ -34,10 +58,10 @@ validates; the client asked it for what it got.
 `ordfs/dir` root outpoint — never bare "origin", which ordinals and git both already
 use for something else.
 
-**Syncing is the lookup service.** Two BRC-24 questions on `ls_gib`:
-`headsSince` walks one branch's heads from a point forward, oldest first, each with its
-own BEEF; `txs` fetches whole transactions by txid (at most 50) as one merged BEEF.
-Publishing is a BRC-22 submission of an atomic BEEF to `tm_gib`.
+**Syncing is the lookup service.** Two BRC-24 questions on `ls_gib`: `headsSince` walks
+one branch's heads from a point forward, oldest first, each with its own BEEF; `txs`
+fetches whole transactions by txid (at most 50) as one merged BEEF. Publishing is a
+BRC-22 submission of an atomic BEEF to `tm_gib`.
 
 **Discovery is BRC-180.** A host is resolved by fetching `https://<host>/manifest.json`
 and reading `metanet.overlays`: `tm_gib` is the submit endpoint, `ls_gib` the lookup
@@ -54,11 +78,11 @@ wallet; with neither wallet nor cache, nothing is bare. `HEAD` resolves to the g
 head's branch — the earliest head on the repository origin, the one whose root *is* the
 origin.
 
-**The head token** is a 1-satoshi PushDrop with the git commit object inscribed on the
-same output: fields `["gib", <repository origin>, <branch>, <root>, <identity>]`,
-protocol `[1, "gib branch"]`, keyID = the root outpoint, counterparty `anyone`, basket
-`gib`, labels `gib push` / `gib delete`, tags `origin:<o>`, `branch:<n>`,
-`commit:<sha>`, `randomizeOutputs: false`.
+**`.gib`** carries a name and a description, and for now a `defaultBranch`: no lookup
+enumerates a repository's branches, so a clone that has never heard of a repository has
+nothing else to ask a peer for. The file may one day also carry publishing hints — patch
+depth, outputs per transaction, stream sizes — but those would be hints a client may
+honour, not rules anyone can enforce. None is implemented.
 
 ## Use it
 
@@ -71,7 +95,7 @@ cd my-project
 git init && git add -A && git commit -m init     # gib init needs a commit
 gib init                                         # mints the repository; writes .gib
 git remote add gib gib://gibhub.net/<repository origin>
-git push gib main                                # publishes the chain to that peer
+git push gib main                                # publishes it to that peer
 
 git clone gib://gibhub.net/<repository origin>   # anyone, no wallet needed
 ```
@@ -80,8 +104,10 @@ git clone gib://gibhub.net/<repository origin>   # anyone, no wallet needed
 URL names and never mints a second one. It adds a `local` remote (`gib://<origin>`, the
 local store only) and prints the peer remote to add.
 
-Other commands: `gib sync <gib url>` refreshes a repository from its peer, `gib doctor`
-checks the wallet and store, `gib put <file>` stores a signed transaction.
+Other commands: `gib sync <gib url> [branch...]` refreshes a repository from its peer —
+naming a branch teaches this client one it could not otherwise discover, which is how
+you pick up a branch someone else created — `gib doctor` checks the wallet and store,
+and `gib put <file>` stores a signed transaction.
 
 Publishing needs a BRC-100 wallet on `http://127.0.0.1:3321` (`1sat serve wallet-api`,
 or set `GIB_WALLET_URL`) and its monitor running (`1sat serve monitor`) so delayed
@@ -98,8 +124,11 @@ broadcasts go out. Reading needs no wallet at all.
 
 - `src/remote/` — `gib://` URLs, BRC-180 discovery, the peer client (both lookups and
   submit), syncing, ref naming, and the remote-helper protocol.
-- `src/chain.ts`, `src/cascade.ts` — planning a chain of commits into content outputs.
-- `src/push.ts`, `src/fetch.ts` — minting the head chain, and walking it back into git.
+- `src/cascade.ts` — planning one commit's tree into nodes; `src/chain.ts` — packing
+  those nodes into transactions.
+- `src/push.ts` — building the root and minting the head; `src/fetch.ts` — turning a
+  published root back into git objects.
+- `src/tree.ts` — reading a published tree, and `stripGitDir`.
 - `src/ordfs/` — the `ordfs/dir` and `ordfs/patch` codecs and vcdiff.
 - `src/token.ts`, `src/seal.ts`, `src/head.ts` — the head token: fields, sealing, reading.
 - `test/fakes/` — a fake BRC-100 wallet, a fake gib peer, and git helpers. Tests never
