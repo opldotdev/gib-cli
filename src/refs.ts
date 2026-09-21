@@ -19,7 +19,10 @@ export type RefRecord = {
 	branch: string
 	/** Head outpoint, `txid_vout`. */
 	head: string
-	/** Commit sha the head publishes. */
+	/**
+	 * Commit sha the head publishes, once it has been read out of the
+	 * head's tree. Empty until then — a head names no commit.
+	 */
 	sha: string
 	/** Root outpoint of the tree the head publishes. */
 	root: string
@@ -35,10 +38,12 @@ export type RepoState = {
 	cursors: Record<string, string>
 	/** Branch names seen on this repository, including emptied ones. */
 	branches: string[]
+	/** Things a refresh could not do, for the caller to report. Not saved. */
+	warnings: string[]
 }
 
 export function emptyRepoState(origin: string): RepoState {
-	return { origin, refs: {}, cursors: {}, branches: [] }
+	return { origin, refs: {}, cursors: {}, branches: [], warnings: [] }
 }
 
 export function refKey(identity: string, branch: string): string {
@@ -62,6 +67,7 @@ export async function loadRepoState(
 			refs: parsed.refs ?? {},
 			cursors: parsed.cursors ?? {},
 			branches: parsed.branches ?? [],
+			warnings: [],
 		}
 	} catch (e) {
 		if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -78,7 +84,8 @@ export async function saveRepoState(
 	const path = statePath(state.origin, home)
 	await mkdir(join(path, '..'), { recursive: true })
 	const tmp = `${path}.${process.pid}.tmp`
-	await writeFile(tmp, `${JSON.stringify(state, null, '\t')}\n`)
+	const { warnings: _, ...saved } = state
+	await writeFile(tmp, `${JSON.stringify(saved, null, '\t')}\n`)
 	await rename(tmp, path)
 }
 
@@ -87,7 +94,12 @@ export function recordHead(
 	state: RepoState,
 	head: { identity: string; branch: string; head: string; sha: string; root: string },
 ): void {
-	state.refs[refKey(head.identity, head.branch)] = { ...head }
+	const key = refKey(head.identity, head.branch)
+	const before = state.refs[key]
+	// A head read from a peer arrives without its sha; keep one already
+	// known for the same head rather than dropping it.
+	const sha = head.sha || (before?.head === head.head ? before.sha : '')
+	state.refs[key] = { ...head, sha }
 	if (!state.branches.includes(head.branch)) state.branches.push(head.branch)
 	if (!state.genesis && head.root === state.origin) {
 		state.genesis = {

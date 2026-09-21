@@ -140,9 +140,43 @@ export async function revList(
 	return r.out.split('\n').map((l) => l.trim()).filter(Boolean)
 }
 
-/** True when git has the object. */
-export async function hasObject(gitDir: string, sha: string): Promise<boolean> {
-	return (await git(gitDir, ['cat-file', '-e', `${sha}^{commit}`])).code === 0
+/** True when git has the object, of that type (or any type). */
+export async function hasObject(
+	gitDir: string,
+	sha: string,
+	type: 'commit' | 'any' = 'commit',
+): Promise<boolean> {
+	const rev = type === 'commit' ? `${sha}^{commit}` : sha
+	return (await git(gitDir, ['cat-file', '-e', rev])).code === 0
+}
+
+/**
+ * Every commit reachable from `tip`, oldest first, with the sha of the
+ * tree it names. One call, because a repository's whole history is asked
+ * for on every push.
+ */
+export async function commitTreePairs(
+	gitDir: string,
+	tip: string,
+	limit = 200_000,
+): Promise<Array<{ sha: string; tree: string }>> {
+	const r = await git(gitDir, [
+		'log',
+		'--reverse',
+		'--topo-order',
+		`--max-count=${limit}`,
+		'--format=%H %T',
+		tip,
+	])
+	if (r.code !== 0) throw new Error(`git log ${tip}: ${r.err.trim()}`)
+	return r.out
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.map((l) => {
+			const [sha, tree] = l.split(' ')
+			return { sha, tree }
+		})
 }
 
 /** Branch names the local repository has, for a first refresh from a peer. */

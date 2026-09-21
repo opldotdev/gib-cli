@@ -1,19 +1,39 @@
+/**
+ * The dry run.
+ *
+ * Before a push spends anything it plans the whole tree, packs it into
+ * transactions that are built but never funded or broadcast, and resolves
+ * the result back out of a scratch store with the real reader. What that
+ * checks is the thing that matters: that the published root, with `.git`
+ * stripped, is the tree git hashed.
+ *
+ * The transaction ids differ from the ones the wallet will produce, so
+ * this proves the shape, not the bytes. The bytes are checked against the
+ * plan when the wallet hands the real transaction back (see packContent).
+ */
+
 import { Transaction } from '@bsv/sdk'
-import type { PlannedOutput } from './cascade.ts'
+import type { PlannedOutput, PublishedTx } from './publish.ts'
 import { bLockingScript } from './script.ts'
 import type { TxStore } from './txstore.ts'
 
-/**
- * The content transaction as it will be, before the wallet funds it: the
- * planned outputs in order, which is the order the wallet keeps
- * (`randomizeOutputs: false`), so every vout a manifest names is already
- * right. Its txid is not the real one, so the store layered here is only
- * good for reading this tree back and checking it against the commit.
- */
-export function previewContentStore(
+/** A store that reads through to `backing` and keeps its writes in memory. */
+export function overlayStore(backing: TxStore): TxStore {
+	const mem = new Map<string, Uint8Array>()
+	return {
+		async get(txid) {
+			return mem.get(txid.toLowerCase()) ?? (await backing.get(txid))
+		},
+		async put(txid, bytes) {
+			mem.set(txid.toLowerCase(), bytes)
+		},
+	}
+}
+
+/** Build the transaction a publisher would, without funding or signing it. */
+export async function dryPublish(
 	outputs: PlannedOutput[],
-	backing: TxStore,
-): { store: TxStore; txid: string; bytes: Uint8Array } {
+): Promise<PublishedTx> {
 	const tx = new Transaction()
 	for (const o of outputs) {
 		tx.addOutput({
@@ -21,16 +41,9 @@ export function previewContentStore(
 			lockingScript: bLockingScript(o.contentType, o.bytes),
 		})
 	}
-	const bytes = new Uint8Array(tx.toBinary())
-	const txid = tx.id('hex')
-	const store: TxStore = {
-		async get(id) {
-			if (id.toLowerCase() === txid) return bytes
-			return backing.get(id)
-		},
-		async put(id, b) {
-			return backing.put(id, b)
-		},
+	return {
+		txid: tx.id('hex'),
+		bytes: new Uint8Array(tx.toBinary()),
+		beef: [],
 	}
-	return { store, txid, bytes }
 }

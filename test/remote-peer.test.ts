@@ -10,42 +10,20 @@ import {
 import { MAX_TXIDS, Peer, SyncBrokenError, peerFor } from '../src/remote/peer.ts'
 import { parseGibUrl } from '../src/remote/url.ts'
 import { clearDiscoveryCache } from '../src/remote/discover.ts'
-import { GIT_COMMIT_TYPE, appendOrdEnvelope } from '../src/script.ts'
-import { sealCommitLock } from '../src/seal.ts'
+import { headTx } from './helpers.ts'
 import { startFakePeer } from './fakes/peer.ts'
 
 const wallet = new ProtoWallet(new PrivateKey(4242)) as unknown as WalletInterface
 const identity = 'ab'.repeat(33)
 const origin = `${'a'.repeat(64)}_0`
 
-const commitBytes = (msg: string) =>
-	new TextEncoder().encode(
-		`tree ${'b'.repeat(40)}\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\n${msg}\n`,
-	)
-
 /** One head token spending `prev`, as a transaction the peer can index. */
-async function headTx(branch: string, root: string, prev?: Transaction) {
-	const lock = await sealCommitLock(wallet, {
-		origin,
-		branch,
-		root,
-		identityPubkey: identity,
-	})
-	const tx = new Transaction()
-	if (prev) {
-		tx.addInput({
-			sourceTransaction: prev,
-			sourceOutputIndex: 0,
-			unlockingScript: new Script(),
-			sequence: 0xffffffff,
-		})
-	}
-	tx.addOutput({
-		satoshis: 1,
-		lockingScript: appendOrdEnvelope(lock, GIT_COMMIT_TYPE, commitBytes(root)),
-	})
-	return tx
-}
+const head = (branch: string, root: string, prev?: Transaction) =>
+	headTx(
+		wallet,
+		{ origin, branch, root, identityPubkey: identity, branchedFrom: '' },
+		prev,
+	)
 
 const atomic = (tx: Transaction) =>
 	new Uint8Array(tx.toAtomicBEEF(true))
@@ -66,9 +44,9 @@ describe('peer lookup client', () => {
 		})
 		expect(peer.endpoints.lookup).toBe('')
 
-		const a = await headTx('main', `${'c'.repeat(64)}_0`)
-		const b = await headTx('main', `${'c'.repeat(64)}_1`, a)
-		const other = await headTx('dev', `${'c'.repeat(64)}_2`)
+		const a = await head('main', `${'c'.repeat(64)}_0`)
+		const b = await head('main', `${'c'.repeat(64)}_1`, a)
+		const other = await head('dev', `${'c'.repeat(64)}_2`)
 		for (const tx of [a, b, other]) await real.submit(atomic(tx))
 
 		const all = await real.headsSince({ origin, branch: 'main' })
@@ -121,7 +99,7 @@ describe('peer lookup client', () => {
 			submit: `${fake.url}/1sat/gib/overlay`,
 			lookup: `${fake.url}/1sat/gib/overlay`,
 		})
-		await real.submit(atomic(await headTx('main', `${'c'.repeat(64)}_0`)))
+		await real.submit(atomic(await head('main', `${'c'.repeat(64)}_0`)))
 		const err = await real
 			.headsSince({ origin, branch: 'main', since: `${'d'.repeat(64)}_0` })
 			.catch((e) => e)
@@ -136,8 +114,8 @@ describe('peer lookup client', () => {
 			submit: `${fake.url}/1sat/gib/overlay`,
 			lookup: `${fake.url}/1sat/gib/overlay`,
 		})
-		const a = await headTx('main', `${'c'.repeat(64)}_0`)
-		const b = await headTx('main', `${'c'.repeat(64)}_1`, a)
+		const a = await head('main', `${'c'.repeat(64)}_0`)
+		const b = await head('main', `${'c'.repeat(64)}_1`, a)
 		for (const tx of [a, b]) await real.submit(atomic(tx))
 
 		const missing = 'f'.repeat(64)

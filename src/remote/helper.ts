@@ -13,7 +13,7 @@
  */
 
 import type { WalletInterface } from '@bsv/sdk'
-import { importHistory } from '../fetch.ts'
+import { importHead } from '../fetch.ts'
 import { loadIdentity, saveIdentity } from '../identity.ts'
 import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
@@ -22,7 +22,6 @@ import {
 	forgetHead,
 	loadRepoState,
 	recordHead,
-	refKey,
 	type RepoState,
 	saveRepoState,
 } from '../refs.ts'
@@ -87,6 +86,7 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 			if (added > 0 && !forPush) {
 				log(`gib: fetched ${added} head(s) from the remote\n`)
 			}
+			for (const w of view.warnings.splice(0)) log(`gib: ${w}\n`)
 		} catch (e) {
 			log(`gib: ${e instanceof Error ? e.message : e}\n`)
 		}
@@ -157,8 +157,13 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 					origin,
 					identity,
 					peer: opts.peer,
-					have: ourShas(state, identity),
-					knownHead: (branch) => state.refs[refKey(identity, branch)]?.head,
+					knownHeads: Object.values(state.refs).map((r) => ({
+						outpoint: r.head,
+						sha: r.sha,
+						identity: r.identity,
+						branch: r.branch,
+						root: r.root,
+					})),
 					home: opts.home,
 					log,
 				})
@@ -176,6 +181,9 @@ export async function runHelper(opts: HelperOptions): Promise<void> {
 						sha: r.sha,
 						root: head.token.root,
 					})
+				}
+				if (r.branchedFrom) {
+					log(`gib: ${r.branch} branches from ${r.branchedFrom}\n`)
 				}
 				opts.io.write(`ok ${r.dst}\n`)
 			}
@@ -214,10 +222,10 @@ async function fetchRef(
 	if (!head) {
 		throw new Error(`no head on ${state.origin} publishes commit ${sha}`)
 	}
-	const imported = await importHistory(opts.store, opts.gitDir, head, {
-		peer: opts.peer,
-	})
-	log(`gib: imported ${imported.length} commit(s) for ${sha.slice(0, 12)}\n`)
+	const imported = await importHead(opts.store, opts.gitDir, head, opts.peer)
+	log(
+		`gib: imported ${imported.commits} commit(s) and ${imported.trees} tree(s) for ${sha.slice(0, 12)}\n`,
+	)
 }
 
 function headFor(
@@ -239,21 +247,6 @@ function headFor(
 		}
 	}
 	return Object.values(state.refs).find((r) => r.sha === sha)?.head
-}
-
-/**
- * The commits this identity's own head chains already publish.
- *
- * Only our own: a branch's spend chain has to carry that branch's whole
- * history, so a commit another publisher minted still needs a head of
- * ours before our branch can point past it. Its content is cited, not
- * rewritten, so what that costs is a head, not a tree.
- */
-function ourShas(state: RepoState, identity: string): string[] {
-	if (!identity) return []
-	return Object.values(state.refs)
-		.filter((r) => r.identity === identity)
-		.map((r) => r.sha)
 }
 
 async function readUntilBlank(io: HelperIo): Promise<string[]> {

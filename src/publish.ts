@@ -10,8 +10,14 @@ import {
 	Transaction,
 	type WalletInterface,
 } from '@bsv/sdk'
-import type { PlannedOutput } from './cascade.ts'
-import { GIT_COMMIT_TYPE, appendOrdEnvelope, bLockingScript, isProvablyUnspendable } from './script.ts'
+/** One output a content transaction will carry. */
+export type PlannedOutput = {
+	contentType: string
+	bytes: Uint8Array
+	/** What it is, for the wallet's output description. */
+	path?: string
+}
+import { bLockingScript, isProvablyUnspendable } from './script.ts'
 import { commitHeadCustomInstructions, sealCommitLock } from './seal.ts'
 import {
 	GIB_BASKET,
@@ -48,7 +54,6 @@ export type Publisher = {
 	): Promise<PublishedTx>
 	publishHead(opts: {
 		token: CommitToken
-		commitBytes: Uint8Array
 		sha: string
 		labels: string[]
 		tags: string[]
@@ -178,9 +183,10 @@ export function walletPublisher(wallet: WalletInterface): Publisher {
 			if (opts.spend && !opts.spend.keyID) {
 				throw new Error('spend missing customInstructions keyID')
 			}
-			const pd = await sealCommitLock(wallet, opts.token)
-			const locking = appendOrdEnvelope(pd, GIT_COMMIT_TYPE, opts.commitBytes)
-			const lockingHex = locking.toHex()
+			// A bare PushDrop: the commit object lives in the tree's `.git`
+			// store like every other commit, so there is nothing to inscribe
+			// beside the token.
+			const lockingHex = (await sealCommitLock(wallet, opts.token)).toHex()
 			const args: CreateActionArgs = {
 				description: pushDescription('head', opts.sha),
 				...(opts.spend ? { inputBEEF: opts.spend.beef } : {}),

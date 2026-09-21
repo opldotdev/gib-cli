@@ -1,18 +1,23 @@
 /**
- * The whole thing, driven by real git: `gib init` mints a repository into
- * the local store, a peer remote publishes it, a reader with no wallet
- * clones it from that peer, a second publisher pushes its own branch, the
- * first pulls it, and a branch is pushed and deleted.
+ * The whole thing, driven by real git: `gib init` mints a repository from
+ * three commits into one head, a peer remote publishes it, a reader with
+ * no wallet clones it and git accepts the history, a second publisher
+ * branches from that head without republishing a single object of it, the
+ * first merges that branch back, and a branch is pushed and deleted.
  *
  * Nothing here touches a network or a real wallet: the wallet is the fake
  * BRC-100 server, the peer is the fake overlay, and both run in process.
  */
 
 import { afterAll, describe, expect, it } from 'bun:test'
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { PrivateKey } from '@bsv/sdk'
+import { readHead } from '../src/head.ts'
+import { parseOutpoint } from '../src/outpoint.ts'
+import { readDir } from '../src/tree.ts'
+import { fileTxStore } from '../src/txstore.ts'
 import { commitFiles, gitEnv, tempRepo } from './fakes/git.ts'
 import { startFakePeer } from './fakes/peer.ts'
 import { FakeWallet } from './fakes/wallet.ts'
@@ -67,8 +72,23 @@ async function must(dir: string, env: Env, cmd: string[]): Promise<string> {
 	return r.out.trim()
 }
 
+/** The `.git` object store of a head's root, by entry name. */
+async function objectsOf(home: string, headOutpoint: string) {
+	const store = fileTxStore(home)
+	const head = await readHead(store, headOutpoint)
+	const entries = await readDir(store, head.root)
+	const dir = entries.find((e) => e.name === '.git')
+	if (!dir) throw new Error('no .git store')
+	return new Map(
+		(await readDir(store, dir.outpoint)).map((o) => [
+			o.name,
+			`${o.outpoint.txid}_${o.outpoint.vout}`,
+		]),
+	)
+}
+
 describe('git end to end', () => {
-	it('inits, publishes, clones, shares and deletes', async () => {
+	it('inits, publishes, clones, branches, merges and deletes', async () => {
 		const bin = await binDir()
 		const peer = startFakePeer()
 		stoppable.push(peer)
@@ -86,13 +106,18 @@ describe('git end to end', () => {
 		const env1 = env(home1, wallet1.url)
 		trash.push(home1)
 
-		// Publisher 1: gib init mints the repository locally.
+		// Publisher 1: three commits, then one `gib init`.
 		const repo = await tempRepo({
 			'README.md': '# demo\n',
 			'src/a.ts': 'export const a = 1\n',
 			'.gib': '{"name":"demo","defaultBranch":"main"}\n',
 		})
 		trash.push(repo.dir)
+		const sha1 = repo.sha
+		const sha2 = await commitFiles(repo.dir, { 'README.md': '# demo v2\n' }, 'v2')
+		await rm(join(repo.dir, 'src/a.ts'))
+		const sha3 = await commitFiles(repo.dir, { 'docs/x.md': 'x' }, 'v3')
+
 		const init = await must(repo.dir, env1, ['gib', 'init', '-y'])
 		const origin = init.match(/minted repository origin ([0-9a-f]{64}_\d+)/)?.[1]
 		expect(origin).toBeTruthy()
@@ -101,17 +126,17 @@ describe('git end to end', () => {
 
 		const url = `gib://${peer.host}/${origin}`
 		await must(repo.dir, env1, ['git', 'remote', 'add', 'gib', url])
-
-		// Two more commits, then one push: three heads, one per commit.
-		await commitFiles(repo.dir, { 'README.md': '# demo v2\n' }, 'v2')
-		await rm(join(repo.dir, 'src/a.ts'))
-		const sha3 = await commitFiles(repo.dir, { 'docs/x.md': 'x' }, 'v3')
 		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', 'main'])
-		expect(peer.heads()).toHaveLength(3)
 
+		// One head for three commits.
+		expect(peer.heads()).toHaveLength(1)
+		const head1 = peer.heads()[0].outpoint
 		const identity1 = peer.heads()[0].identity
-		const lsRemote = await must(repo.dir, env1, ['git', 'ls-remote', 'gib'])
-		expect(lsRemote).toContain(`${sha3}\trefs/heads/main`)
+		expect(await must(repo.dir, env1, ['git', 'ls-remote', 'gib'])).toContain(
+			`${sha3}\trefs/heads/main`,
+		)
+		const objects1 = await objectsOf(home1, head1)
+		for (const sha of [sha1, sha2, sha3]) expect(objects1.has(sha)).toBe(true)
 
 		// A reader: no wallet at all, a fresh store, clones from the peer.
 		const readerHome = await mkdtemp(join(tmpdir(), 'gib-reader-'))
@@ -127,22 +152,22 @@ describe('git end to end', () => {
 			`refs/heads/@${identity1}/main`,
 		)
 		expect(await must(clone, readerEnv, ['git', 'rev-parse', 'HEAD'])).toBe(sha3)
+		expect(await must(clone, readerEnv, ['git', 'rev-list', '--count', 'HEAD'])).toBe('3')
 		expect(await Bun.file(join(clone, 'docs/x.md')).text()).toBe('x')
 		expect(await Bun.file(join(clone, 'src/a.ts')).exists()).toBe(false)
+		// Every commit has its tree and blobs, so git accepts the history.
 		await must(clone, readerEnv, ['git', 'fsck', '--strict', '--no-dangling'])
-		// The whole history came across, one commit per head.
-		expect(
-			(await must(clone, readerEnv, ['git', 'rev-list', '--count', 'HEAD'])),
-		).toBe('3')
+		await must(clone, readerEnv, ['git', 'checkout', '-q', sha1])
+		expect(await Bun.file(join(clone, 'src/a.ts')).exists()).toBe(true)
 
-		// Publisher 2 clones, commits and publishes its own main.
+		// Publisher 2 clones and branches from publisher 1's head.
 		const home2 = await mkdtemp(join(tmpdir(), 'gib-home2-'))
 		const work2 = await mkdtemp(join(tmpdir(), 'gib-work2-'))
 		trash.push(home2, work2)
 		const env2 = env(home2, wallet2.url)
 		await must(work2, env2, ['git', 'clone', '-q', url, 'demo'])
 		const dir2 = join(work2, 'demo')
-		await must(dir2, env2, ['git', 'checkout', '-q', '-B', 'main'])
+		await must(dir2, env2, ['git', 'checkout', '-q', '-b', 'feature'])
 		const sha4 = await commitFiles(dir2, { 'two.txt': 'from 2' }, 'two')
 
 		// Another publisher's branch cannot be pushed.
@@ -155,42 +180,73 @@ describe('git end to end', () => {
 		expect(foreign.code).not.toBe(0)
 		expect(foreign.out).toContain('another publisher')
 
-		await must(dir2, env2, ['git', 'push', '-q', 'origin', 'HEAD:refs/heads/main'])
-		const refs2 = await must(dir2, env2, ['git', 'ls-remote', 'origin'])
-		expect(refs2).toContain(`${sha4}\trefs/heads/main`)
-		expect(refs2).toContain(`${sha3}\trefs/heads/@${identity1}/main`)
+		await must(dir2, env2, ['git', 'push', '-q', 'origin', 'feature'])
+		const head2 = peer.heads().find((h) => h.branch === 'feature')
+		if (!head2) throw new Error('feature head missing')
+		expect(peer.heads()).toHaveLength(2)
 
-		// Publisher 1 pulls publisher 2's branch and republishes the merge.
-		const identity2 = peer
-			.heads()
-			.map((h) => h.identity)
-			.find((id) => id !== identity1)
-		expect(identity2).toBeTruthy()
+		// Branching copies nothing: publisher 1's commit objects are cited
+		// exactly where publisher 1 published them.
+		const objects2 = await objectsOf(home2, head2.outpoint)
+		for (const sha of [sha1, sha2, sha3]) {
+			expect(objects2.get(sha)).toBe(objects1.get(sha))
+		}
+		const newTxid = parseOutpoint(objects2.get(sha4) ?? '').txid
+		for (const sha of [sha1, sha2, sha3]) {
+			expect(parseOutpoint(objects2.get(sha) ?? '').txid).not.toBe(newTxid)
+		}
+		// The token's parents mirror the commit's: nothing spent, one fork.
+		const forked = await readHead(fileTxStore(home2), head2.outpoint)
+		expect(forked.token.branchedFrom).toBe(head1)
+
+		// Publisher 1 commits again, then merges publisher 2's branch. No
+		// lookup enumerates a repository's branches, so the branch name is
+		// named once — that is what `gib sync <url> <branch>` is for.
+		await must(repo.dir, env1, ['gib', 'sync', url, 'feature'])
+		await commitFiles(repo.dir, { 'docs/y.md': 'y' }, 'v4')
+		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', 'main'])
 		await must(repo.dir, env1, [
 			'git',
 			'pull',
 			'-q',
 			'--no-rebase',
+			'--no-edit',
 			'gib',
-			`@${identity2}/main`,
+			`@${forked.token.identityPubkey}/feature`,
 		])
 		expect(await Bun.file(join(repo.dir, 'two.txt')).text()).toBe('from 2')
+		const merge = await must(repo.dir, env1, ['git', 'rev-parse', 'HEAD'])
+		expect(
+			(await must(repo.dir, env1, ['git', 'rev-list', '--parents', '-n1', merge]))
+				.split(' ')
+				.length,
+		).toBe(3)
 		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', 'main'])
-		const merged = await must(repo.dir, env1, ['git', 'rev-parse', 'HEAD'])
+		const mainHeads = peer.heads().filter((h) => h.branch === 'main')
+		const mergeHead = mainHeads[mainHeads.length - 1]
+		const mergeToken = await readHead(fileTxStore(home1), mergeHead.outpoint)
+		// A merge head carries both: the spend is the first parent, the
+		// field is the one it merged in.
+		expect(mergeToken.token.branchedFrom).toBe(head2.outpoint)
 		expect(await must(repo.dir, env1, ['git', 'ls-remote', 'gib'])).toContain(
-			`${merged}\trefs/heads/main`,
+			`${merge}\trefs/heads/main`,
 		)
 
+		// A reader picks the merge up and git still accepts the history.
+		await must(clone, readerEnv, ['git', 'checkout', '-q', '-'])
+		await must(clone, readerEnv, ['git', 'fetch', '-q', 'origin'])
+		await must(clone, readerEnv, ['git', 'fsck', '--strict', '--no-dangling'])
+
 		// A branch, then deleting it on the peer.
-		await must(repo.dir, env1, ['git', 'checkout', '-q', '-b', 'feature'])
-		await commitFiles(repo.dir, { 'f.txt': 'f' }, 'feature')
-		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', 'feature'])
+		await must(repo.dir, env1, ['git', 'checkout', '-q', '-b', 'scratch'])
+		await commitFiles(repo.dir, { 'f.txt': 'f' }, 'scratch')
+		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', 'scratch'])
 		expect(await must(repo.dir, env1, ['git', 'ls-remote', 'gib'])).toContain(
-			'refs/heads/feature',
+			'refs/heads/scratch',
 		)
-		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', ':feature'])
+		await must(repo.dir, env1, ['git', 'push', '-q', 'gib', ':scratch'])
 		expect(
 			await must(repo.dir, env1, ['git', 'ls-remote', 'gib']),
-		).not.toContain('refs/heads/feature')
-	}, 120_000)
+		).not.toContain('refs/heads/scratch')
+	}, 180_000)
 })

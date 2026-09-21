@@ -28,7 +28,9 @@ if (cmd === 'help' || cmd === '-h' || cmd === '--help') {
 			'\n' +
 			'  gib init [-y] [--name n] [--description d] [--remote local] [--host gibhub.net]\n' +
 			`                    mint the repository from HEAD, write ${GIB_FILE}, add the local remote\n` +
-			'  gib sync <remote>  refresh a repository from its peer\n' +
+			'  gib sync <remote> [branch...]\n' +
+			'                    refresh a repository from its peer; naming a branch\n' +
+			'                    teaches this client a branch it could not discover\n' +
 			'  gib doctor         check wallet + txstore\n' +
 			'  gib put <file>     store a signed tx (verifies txid)\n',
 	)
@@ -99,17 +101,23 @@ if (cmd === 'init') {
 if (cmd === 'sync') {
 	const url = argv[1]
 	if (!url) {
-		console.error('usage: gib sync gib://<host>/<repository origin>')
+		console.error(
+			'usage: gib sync gib://<host>/<repository origin> [branch...]',
+		)
 		process.exit(1)
 	}
+	// Naming branches is how a client learns of one it cannot discover:
+	// the lookup service has no query that enumerates them.
+	const branches = argv.slice(2).filter((a) => !a.startsWith('-'))
 	try {
 		const parsed = parseGibUrl(url)
 		const peer = await peerFor(parsed)
 		if (!peer) throw new Error('that URL names no peer to sync with')
 		const store = fileTxStore(home, peerFetchRawTx(peer))
 		const state = await loadRepoState(parsed.origin, home)
-		const added = await pullRepo(peer, store, state)
+		const added = await pullRepo(peer, store, state, branches)
 		await saveRepoState(state, home)
+		for (const w of state.warnings) process.stderr.write(`gib: ${w}\n`)
 		process.stdout.write(`${added} new head(s)\n`)
 		for (const r of Object.values(state.refs)) {
 			process.stdout.write(`${r.sha} ${r.identity.slice(0, 8)}… ${r.branch}\n`)

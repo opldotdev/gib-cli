@@ -1,124 +1,107 @@
 /**
- * The commit chain.
+ * Packing a plan into transactions.
  *
- * A push of N commits publishes N heads, each spending the last, each
- * carrying its own commit object and its own root tree: the branch's spend
- * chain *is* the commit history, with no gaps for a later pull to trip
- * over. This module builds the content those heads point at.
+ * A plan is nodes in dependency order with references by node. Packing
+ * assigns each node an output: nodes are laid down in order, a transaction
+ * at a time, and a reference is a same-transaction vout when its target
+ * landed in the same transaction and a full outpoint when it landed in an
+ * earlier one. That ordering is what makes it safe — a node's dependencies
+ * are always before it, so they are already placed.
  *
- * Content for the whole push goes in as few transactions as possible —
- * ideally one — with each commit's tree planned against the one before it,
- * inside the same transaction where it can be. A directory's
- * same-transaction reference is a single byte, so a transaction cannot
- * carry more than 256 outputs; when the next commit would not fit, the
- * transaction is published and the chain carries on in a new one, where
- * the previous tree is now citable (and patchable) at real outpoints.
+ * A same-transaction reference is one byte, so a transaction carries at
+ * most 256 outputs. Nothing about a tree has to fit in one transaction:
+ * when the next node will not fit, the transaction is published and the
+ * rest carries on in a new one, citing what came before by outpoint.
  */
 
 import {
+	encodePlannedDir,
 	MAX_SAME_TX_VOUT,
-	type IncomingFile,
-	type PlannedOutput,
-	type Tree,
-	bindTree,
-	planCommit,
+	type Plan,
+	type PlanRef,
+	toDirEntry,
 } from './cascade.ts'
-import { treeShaFromCommit } from './gitread.ts'
-import { formatOutpoint, type Outpoint } from './outpoint.ts'
-import { previewContentStore } from './preview.ts'
-import type { Publisher, PublishedTx } from './publish.ts'
+import { DIR_CONTENT_TYPE, type DirRef } from './ordfs/dir.ts'
+import type { Outpoint } from './outpoint.ts'
+import type { PlannedOutput, PublishedTx } from './publish.ts'
 import { bLockingScript } from './script.ts'
-import { collectTree, materializeGit } from './tree.ts'
 import type { TxStore } from './txstore.ts'
 import { Transaction } from '@bsv/sdk'
 
-/** One commit to publish, as git has it. */
-export type ChainCommit = {
-	sha: string
-	/** The raw git commit object, inscribed on its head. */
-	commit: Uint8Array
-	files: IncomingFile[]
-}
+/** Same-transaction vouts are one byte, so 256 outputs is the ceiling. */
+export const MAX_CONTENT_OUTPUTS = MAX_SAME_TX_VOUT + 1
 
-export type PublishedContent = {
-	/** Root outpoint of each commit's tree, by commit sha. */
-	roots: Map<string, Outpoint>
-	/** The content transactions published, in order. */
+export type PackedContent = {
+	/** Where each planned node ended up. */
+	outpoints: Map<number, Outpoint>
+	/** The transactions published, in order. */
 	txs: PublishedTx[]
-	/** The tree the last commit in the chain published. */
-	tree: Tree
 	/** Transactions reused from a previous, interrupted attempt. */
 	reused: number
 }
 
-export type ChainOptions = {
-	commits: ChainCommit[]
-	/** Tree of the commit the branch's current head publishes. */
-	prevTree?: Tree
+export type PackOptions = {
+	plan: Plan
 	store: TxStore
-	publisher: Publisher
-	labels: string[]
-	/** Where a commit's tree is checked against its git tree sha. */
-	scratchGitDir: string
+	/** Publishes one transaction's worth of outputs. */
+	publish: (outputs: PlannedOutput[]) => Promise<PublishedTx>
 	/** Content transactions from an interrupted push, in order. */
 	pending?: PublishedTx[]
-	/** Outputs one content transaction may carry. */
 	maxOutputs?: number
-	/** Called after each content transaction, to record it for a retry. */
 	onContent?: (txs: PublishedTx[]) => Promise<void>
 	log?: (s: string) => void
 }
 
-/** Same-transaction vouts are one byte, so 256 outputs is the hard ceiling. */
-export const MAX_CONTENT_OUTPUTS = MAX_SAME_TX_VOUT + 1
-
-/**
- * Plan and publish the content for a chain of commits, checking each
- * commit's tree against the tree sha the commit names before anything is
- * minted.
- */
-export async function publishChain(
-	opts: ChainOptions,
-): Promise<PublishedContent> {
-	const max = opts.maxOutputs ?? MAX_CONTENT_OUTPUTS
-	const roots = new Map<string, Outpoint>()
+export async function packContent(opts: PackOptions): Promise<PackedContent> {
+	const max = Math.min(opts.maxOutputs ?? MAX_CONTENT_OUTPUTS, MAX_CONTENT_OUTPUTS)
+	const nodes = opts.plan.nodes
+	const outpoints = new Map<number, Outpoint>()
 	const txs: PublishedTx[] = []
 	let reused = 0
-	let tree = opts.prevTree
-	let pendingOutputs: PlannedOutput[] = []
-	let pendingCommits: Array<{ sha: string; rootIndex: number; commit: Uint8Array }> = []
 
-	const flush = async (): Promise<void> => {
-		if (pendingOutputs.length === 0) return
-		// Check every tree in this transaction against its commit before a
-		// single satoshi moves: the published tree must be byte-identical to
-		// git's, or the commit sha would not verify.
-		const preview = previewContentStore(pendingOutputs, opts.store)
-		for (const c of pendingCommits) {
-			await validateTree(
-				preview.store,
-				{ txid: preview.txid, vout: c.rootIndex },
-				c.commit,
-				opts.scratchGitDir,
+	for (let start = 0; start < nodes.length; start += max) {
+		const end = Math.min(start + max, nodes.length)
+		const here = new Map<number, number>()
+		for (let id = start; id < end; id++) here.set(id, id - start)
+
+		const resolve = (ref: PlanRef): DirRef => {
+			if (ref.kind !== 'node') return ref
+			const vout = here.get(ref.id)
+			if (vout !== undefined) return { kind: 'same-tx', vout }
+			const op = outpoints.get(ref.id)
+			if (!op) {
+				throw new Error(`pack: node ${ref.id} referenced before it was placed`)
+			}
+			return { kind: 'outpoint', txid: op.txid, vout: op.vout }
+		}
+
+		const outputs: PlannedOutput[] = []
+		for (let id = start; id < end; id++) {
+			const node = nodes[id]
+			outputs.push(
+				node.kind === 'data'
+					? { contentType: node.contentType, bytes: node.bytes, path: node.label }
+					: {
+							contentType: DIR_CONTENT_TYPE,
+							bytes: encodePlannedDir(
+								node.entries.map((e) => toDirEntry(e, resolve(e.ref))),
+							),
+							path: node.label,
+						},
 			)
 		}
-		const reuse = matchPending(opts.pending?.[txs.length], pendingOutputs)
-		const tx =
-			reuse ??
-			(await opts.publisher.publishContent(
-				pendingOutputs,
-				opts.labels,
-				pendingCommits[pendingCommits.length - 1].sha,
-			))
+
+		const reuse = matchPending(opts.pending?.[txs.length], outputs)
+		const tx = reuse ?? (await opts.publish(outputs))
 		if (reuse) {
 			reused++
 			opts.log?.(`gib: reusing content transaction ${reuse.txid}\n`)
-		} else if (!carriesOutputs(tx, pendingOutputs)) {
-			// Every same-transaction reference in every manifest just
-			// planned is a raw vout. A wallet that reordered the outputs,
-			// or put change anywhere but last, would leave every directory
-			// pointing at the wrong thing — and the push would report
-			// success. Refuse before any of it is used.
+		} else if (!carriesOutputs(tx, outputs)) {
+			// Every same-transaction reference just encoded is a raw vout. A
+			// wallet that reordered the outputs, or put change anywhere but
+			// last, would leave every directory pointing at the wrong thing
+			// — and the push would report success. Refuse before any of it
+			// is used.
 			throw new Error(
 				`wallet returned ${tx.txid} without the planned outputs in order (randomizeOutputs must be honoured)`,
 			)
@@ -128,41 +111,11 @@ export async function publishChain(
 		// Record it now, not at the end: a push interrupted after this
 		// transaction must not pay to publish the same content again.
 		await opts.onContent?.([...txs])
-		for (const c of pendingCommits) {
-			roots.set(c.sha, { txid: tx.txid, vout: c.rootIndex })
+		for (let id = start; id < end; id++) {
+			outpoints.set(id, { txid: tx.txid, vout: id - start })
 		}
-		if (tree) tree = bindTree(tree, tx.txid)
-		pendingOutputs = []
-		pendingCommits = []
 	}
-
-	for (const c of opts.commits) {
-		let plan = await planCommit({
-			files: c.files,
-			prev: tree,
-			baseVout: pendingOutputs.length,
-		})
-		if (pendingOutputs.length > 0 && pendingOutputs.length + plan.outputs.length > max) {
-			await flush()
-			plan = await planCommit({ files: c.files, prev: tree, baseVout: 0 })
-		}
-		if (plan.outputs.length > max) {
-			// TODO: an `ordfs/dir` same-transaction reference is one byte, so
-			// a single commit cannot publish more than 256 new objects at
-			// once. Splitting one commit's tree across transactions needs the
-			// dir format to grow a wider same-tx reference, or the planner to
-			// publish deep subtrees as their own transactions first.
-			throw new Error(
-				`commit ${c.sha} needs ${plan.outputs.length} outputs; one content transaction holds at most ${max}`,
-			)
-		}
-		pendingOutputs.push(...plan.outputs)
-		pendingCommits.push({ sha: c.sha, rootIndex: plan.rootIndex, commit: c.commit })
-		tree = plan.tree
-	}
-	await flush()
-	if (!tree) throw new Error('chain: nothing to publish')
-	return { roots, txs, tree, reused }
+	return { outpoints, txs, reused }
 }
 
 /**
@@ -197,25 +150,4 @@ function matchPending(
 ): PublishedTx | undefined {
 	if (!candidate) return undefined
 	return carriesOutputs(candidate, outputs) ? candidate : undefined
-}
-
-/**
- * Resolve a published root and compare it with the tree sha the commit
- * names. Nothing extra goes in the published tree, so the two must match
- * byte for byte.
- */
-export async function validateTree(
-	store: TxStore,
-	root: Outpoint,
-	commitBytes: Uint8Array,
-	scratchGitDir: string,
-): Promise<void> {
-	const files = await collectTree(store, root)
-	const got = await materializeGit(scratchGitDir, files, commitBytes)
-	const want = treeShaFromCommit(commitBytes)
-	if (got.tree !== want) {
-		throw new Error(
-			`validation: resolved tree ${got.tree} != commit tree ${want} (root ${formatOutpoint(root)})`,
-		)
-	}
 }

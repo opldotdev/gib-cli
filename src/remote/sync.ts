@@ -13,14 +13,16 @@
  */
 
 import { Beef } from '@bsv/sdk'
+import { gitHash } from '../git.ts'
 import { readHead } from '../head.ts'
+import { GIT_DIR, readDir } from '../tree.ts'
 import { DIR_CONTENT_TYPE, dirDecode } from '../ordfs/dir.ts'
 import { PATCH_CONTENT_TYPE, patchDecode } from '../ordfs/patch.ts'
 import { formatOutpoint, type Outpoint, parseOutpoint } from '../outpoint.ts'
 import { payloadFromScript } from '../content.ts'
 import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
 import { recordHead, type RepoState } from '../refs.ts'
-import { loadTx, resolvePath } from '../resolver.ts'
+import { loadTx, resolveOutpoint, resolvePath } from '../resolver.ts'
 import type { TxStore } from '../txstore.ts'
 import { MAX_PAGES, MAX_TXIDS, type Peer, SyncBrokenError } from './peer.ts'
 
@@ -81,23 +83,76 @@ export async function pullBranch(
 			if (head.token.origin !== state.origin || head.token.branch !== branch) {
 				continue
 			}
+			// A head names no commit: the commit it publishes is in its
+			// tree. Record the head now and read the sha once, for the
+			// branch's newest head only, when the walk is done.
 			recordHead(state, {
 				identity: head.token.identityPubkey,
 				branch,
 				head: head.outpoint,
-				sha: head.sha,
+				sha: '',
 				root: head.token.root,
 			})
 			state.cursors[branch] = h.outpoint
 			added++
 		}
-		if (!page.more || page.heads.length === 0) return added
+		if (!page.more || page.heads.length === 0) {
+			await resolveShas(peer, store, state, branch)
+			return added
+		}
 		const next = page.heads[page.heads.length - 1].outpoint
 		if (next === since) {
 			throw new Error(`branch ${branch}: the peer is not advancing past ${since}`)
 		}
 		since = next
 	}
+}
+
+/**
+ * Fill in the commit sha of each publisher's newest head on a branch. It
+ * lives in the head's tree, so this is the one place a ref listing has to
+ * read content — once per branch, not once per head.
+ */
+async function resolveShas(
+	peer: Peer,
+	store: TxStore,
+	state: RepoState,
+	branch: string,
+): Promise<void> {
+	for (const ref of Object.values(state.refs)) {
+		if (ref.branch !== branch || ref.sha) continue
+		try {
+			ref.sha = await tipShaFrom(peer, store, parseOutpoint(ref.root))
+		} catch (e) {
+			// Without the sha there is nothing to advertise; the ref stays
+			// recorded, so a later refresh can try again.
+			state.warnings.push(
+				`head ${ref.head}: ${e instanceof Error ? e.message : e}`,
+			)
+		}
+	}
+}
+
+/**
+ * The commit a published root publishes, fetching only what it takes to
+ * read it: the root manifest, the `.git` manifest, and the tip commit.
+ */
+export async function tipShaFrom(
+	peer: Peer | undefined,
+	store: TxStore,
+	root: Outpoint,
+): Promise<string> {
+	await ensureTxs(store, peer, [root.txid])
+	const gitEntry = (await readDir(store, root)).find(
+		(e) => e.name === GIT_DIR && e.isDir,
+	)
+	if (!gitEntry) throw new Error(`published root has no ${GIT_DIR} store`)
+	await ensureTxs(store, peer, [gitEntry.outpoint.txid])
+	const tip = (await readDir(store, gitEntry.outpoint)).find((e) => e.name === '.')
+	if (!tip) throw new Error(`${GIT_DIR} names no tip commit`)
+	await ensureTxs(store, peer, [tip.outpoint.txid])
+	const payload = await resolveOutpoint(store, tip.outpoint)
+	return gitHash('commit', payload.bytes)
 }
 
 /**

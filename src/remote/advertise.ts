@@ -52,9 +52,16 @@ export function splitRef(
 	return { publisher: id, branch: name.slice(slash + 1) }
 }
 
-/** Every current head on the repository, named relative to `me`. */
+/**
+ * Every current head on the repository, named relative to `me`.
+ *
+ * A head whose commit could not be read — its tree is not reachable from
+ * any peer this client can talk to — is not advertised: git is told about
+ * a ref only when the sha behind it can be produced.
+ */
 export function advertise(state: RepoState, me: string): Ref[] {
 	return Object.values(state.refs)
+		.filter((r) => r.sha)
 		.map((r) => ({
 			sha: r.sha,
 			name: refName(r.identity, r.branch, me),

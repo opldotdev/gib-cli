@@ -1,172 +1,107 @@
-import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { PrivateKey } from '@bsv/sdk'
-import { type ChainCommit, publishChain } from '../src/chain.ts'
-import { commitBytes, filesAtCommit, revList } from '../src/gitread.ts'
-import { walletPublisher } from '../src/publish.ts'
+import { describe, expect, it } from 'bun:test'
+import { Plan, planCommit } from '../src/cascade.ts'
+import { MAX_CONTENT_OUTPUTS, packContent } from '../src/chain.ts'
+import { dirDecode } from '../src/ordfs/dir.ts'
+import { dryPublish, overlayStore } from '../src/preview.ts'
+import type { PlannedOutput, PublishedTx } from '../src/publish.ts'
+import { resolveOutpoint } from '../src/resolver.ts'
 import { collectTree } from '../src/tree.ts'
-import { PATCH_CONTENT_TYPE } from '../src/ordfs/patch.ts'
-import { commitFiles, tempRepo } from './fakes/git.ts'
-import { FakeWallet } from './fakes/wallet.ts'
 import { memStore } from './helpers.ts'
 
-const trash: string[] = []
-afterEach(async () => {
-	for (const d of trash.splice(0)) await rm(d, { recursive: true, force: true })
+const enc = (s: string) => new TextEncoder().encode(s)
+const file = (path: string, body: string) => ({
+	path,
+	bytes: enc(body),
+	contentType: 'text/plain',
 })
 
-describe('publishing a chain of commits', () => {
-	it('splits into more transactions when one will not hold the chain', async () => {
-		const repo = await tempRepo({ 'a.txt': 'a1', 'dir/b.txt': 'b1' })
-		trash.push(repo.dir)
-		await commitFiles(repo.dir, { 'a.txt': 'a2' }, 'two')
-		await commitFiles(repo.dir, { 'dir/c.txt': 'c1' }, 'three')
-		const tip = await commitFiles(repo.dir, { 'dir/b.txt': 'b2' }, 'four')
-
-		const fake = await FakeWallet.create(new PrivateKey(4242))
-		const wallet = fake.asWallet()
-		const store = memStore()
-		const scratch = await mkdtemp(join(tmpdir(), 'gib-scratch-'))
-		trash.push(scratch)
-
-		const commits: ChainCommit[] = []
-		for (const sha of await revList(repo.gitDir, tip)) {
-			commits.push({
-				sha,
-				commit: await commitBytes(repo.gitDir, sha),
-				files: await filesAtCommit(repo.gitDir, sha),
-			})
-		}
-		expect(commits).toHaveLength(4)
-
-		// A small ceiling forces the chain across several transactions.
-		const published = await publishChain({
-			commits,
-			store,
-			publisher: walletPublisher(wallet),
-			labels: ['gib push'],
-			scratchGitDir: scratch,
-			maxOutputs: 5,
+describe('packing a plan into transactions', () => {
+	it('keeps a whole tree in one transaction when it fits', async () => {
+		const plan = new Plan()
+		const r = await planCommit({
+			files: [file('a.txt', 'a'), file('dir/b.txt', 'b')],
+			plan,
 		})
-		expect(published.txs.length).toBeGreaterThan(1)
-		expect(published.roots.size).toBe(4)
-
-		// Every commit's tree still resolves, across transactions.
-		for (const c of commits) {
-			const root = published.roots.get(c.sha)
-			if (!root) throw new Error(`no root for ${c.sha}`)
-			const files = await collectTree(store, root)
-			expect(files.length).toBeGreaterThan(0)
-		}
-		const tipFiles = await collectTree(store, published.roots.get(tip) ?? { txid: '', vout: 0 })
-		expect(tipFiles.map((f) => f.path).sort()).toEqual([
-			'a.txt',
-			'dir/b.txt',
-			'dir/c.txt',
-		])
-		expect(new TextDecoder().decode(tipFiles[1].bytes)).toBe('b2')
-	})
-
-	it('refuses a commit that will not fit in one transaction', async () => {
-		const repo = await tempRepo({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' })
-		trash.push(repo.dir)
-		const fake = await FakeWallet.create(new PrivateKey(4242))
-		const scratch = await mkdtemp(join(tmpdir(), 'gib-scratch-'))
-		trash.push(scratch)
-		const sha = repo.sha
+		const store = overlayStore(memStore())
+		const packed = await packContent({ plan, store, publish: dryPublish })
+		expect(packed.txs).toHaveLength(1)
+		const root = packed.outpoints.get(r.rootId)
+		if (!root) throw new Error('no root')
+		// Inside one transaction every reference is a single vout byte.
+		const manifest = dirDecode((await resolveOutpoint(store, root)).bytes)
+		expect(manifest.entries.every((e) => e.ref.kind === 'same-tx')).toBe(true)
 		expect(
-			publishChain({
-				commits: [
-					{
-						sha,
-						commit: await commitBytes(repo.gitDir, sha),
-						files: await filesAtCommit(repo.gitDir, sha),
-					},
-				],
-				store: memStore(),
-				publisher: walletPublisher(fake.asWallet()),
-				labels: ['gib push'],
-				scratchGitDir: scratch,
-				maxOutputs: 2,
-			}),
-		).rejects.toThrow(/one content transaction holds at most 2/)
+			(await collectTree(store, root)).map((f) => f.path).sort(),
+		).toEqual(['a.txt', 'dir/b.txt'])
 	})
 
-	it('patches against content a closed transaction already holds', async () => {
-		const repo = await tempRepo({ 'a.txt': 'one two three four five' })
-		trash.push(repo.dir)
-		const tip = await commitFiles(
-			repo.dir,
-			{ 'a.txt': 'one two three four six' },
-			'edit',
+	it('spills into more transactions and cites what came before', async () => {
+		const plan = new Plan()
+		const files = Array.from({ length: 12 }, (_, i) =>
+			file(`d${i % 3}/f${i}.txt`, `body ${i}`),
 		)
-		const fake = await FakeWallet.create(new PrivateKey(4242))
-		const store = memStore()
-		const scratch = await mkdtemp(join(tmpdir(), 'gib-scratch-'))
-		trash.push(scratch)
-		const commits: ChainCommit[] = []
-		for (const sha of await revList(repo.gitDir, tip)) {
-			commits.push({
-				sha,
-				commit: await commitBytes(repo.gitDir, sha),
-				files: await filesAtCommit(repo.gitDir, sha),
-			})
-		}
-		// One commit per transaction: the second can patch the first.
-		const published = await publishChain({
-			commits,
+		const r = await planCommit({ files, plan })
+		expect(plan.size).toBeGreaterThan(4)
+		const store = overlayStore(memStore())
+		const packed = await packContent({
+			plan,
 			store,
-			publisher: walletPublisher(fake.asWallet()),
-			labels: ['gib push'],
-			scratchGitDir: scratch,
-			maxOutputs: 2,
+			publish: dryPublish,
+			maxOutputs: 4,
 		})
-		expect(published.txs).toHaveLength(2)
-		const second = published.txs[1]
-		const { Transaction } = await import('@bsv/sdk')
-		const tx = Transaction.fromBinary(Array.from(second.bytes))
-		const { payloadFromScript } = await import('../src/content.ts')
-		const types = tx.outputs
-			.map((o) => payloadFromScript(o.lockingScript)?.contentType)
-			.filter(Boolean)
-		expect(types).toContain(PATCH_CONTENT_TYPE)
+		expect(packed.txs.length).toBeGreaterThan(1)
+		const root = packed.outpoints.get(r.rootId)
+		if (!root) throw new Error('no root')
+		// The files landed in earlier transactions than the directories
+		// that name them, so those references are full outpoints.
+		const manifest = dirDecode((await resolveOutpoint(store, root)).bytes)
+		const sub = manifest.entries[0]
+		if (sub.ref.kind !== 'same-tx') throw new Error('expected a sibling dir')
+		const subdir = dirDecode(
+			(await resolveOutpoint(store, { txid: root.txid, vout: sub.ref.vout }))
+				.bytes,
+		)
+		expect(subdir.entries.every((e) => e.ref.kind === 'outpoint')).toBe(true)
+		expect(await collectTree(store, root)).toHaveLength(12)
 	})
 
-	it('refuses a wallet that hands back different outputs', async () => {
-		const repo = await tempRepo({ 'a.txt': 'a' })
-		trash.push(repo.dir)
-		const fake = await FakeWallet.create(new PrivateKey(4242))
-		const scratch = await mkdtemp(join(tmpdir(), 'gib-scratch-'))
-		trash.push(scratch)
-		const honest = walletPublisher(fake.asWallet())
-		const { Transaction } = await import('@bsv/sdk')
-		const shuffling = {
-			...honest,
-			// A wallet that reorders outputs makes every same-transaction
-			// reference in every manifest point at the wrong output.
-			publishContent: async (...args: Parameters<typeof honest.publishContent>) => {
-				const tx = await honest.publishContent(...args)
-				const parsed = Transaction.fromBinary(Array.from(tx.bytes))
-				parsed.outputs.reverse()
-				return { ...tx, bytes: new Uint8Array(parsed.toBinary()) }
-			},
+	it('never asks for a same-transaction vout a byte cannot hold', () => {
+		expect(MAX_CONTENT_OUTPUTS).toBe(256)
+	})
+
+	it('refuses a publisher that hands back different outputs', async () => {
+		const plan = new Plan()
+		await planCommit({ files: [file('a.txt', 'a')], plan })
+		const shuffling = async (outputs: PlannedOutput[]): Promise<PublishedTx> => {
+			const tx = await dryPublish([...outputs].reverse())
+			return tx
 		}
 		expect(
-			publishChain({
-				commits: [
-					{
-						sha: repo.sha,
-						commit: await commitBytes(repo.gitDir, repo.sha),
-						files: await filesAtCommit(repo.gitDir, repo.sha),
-					},
-				],
-				store: memStore(),
-				publisher: shuffling,
-				labels: ['gib push'],
-				scratchGitDir: scratch,
+			packContent({
+				plan,
+				store: overlayStore(memStore()),
+				publish: shuffling,
 			}),
 		).rejects.toThrow(/without the planned outputs in order/)
+	})
+
+	it('reuses a transaction an interrupted push already published', async () => {
+		const plan = new Plan()
+		await planCommit({ files: [file('a.txt', 'a')], plan })
+		const store = overlayStore(memStore())
+		const first = await packContent({ plan, store, publish: dryPublish })
+		let published = 0
+		const second = await packContent({
+			plan,
+			store,
+			pending: first.txs,
+			publish: async (o) => {
+				published++
+				return dryPublish(o)
+			},
+		})
+		expect(published).toBe(0)
+		expect(second.reused).toBe(1)
+		expect(second.txs[0].txid).toBe(first.txs[0].txid)
 	})
 })
