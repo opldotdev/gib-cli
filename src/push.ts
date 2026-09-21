@@ -343,7 +343,7 @@ async function publishPush(opts: PushState): Promise<MintResult> {
 	await opts.store.put(head.txid, head.bytes)
 	await clearPending(opts.sha, opts.home)
 	const outpoint = `${head.txid}_${head.vout}`
-	await submitHead(opts, head, packed.txs)
+	await submitHead(opts, head, packed.txs, branchedFrom)
 	return { origin, head: outpoint, sha: opts.sha, branchedFrom }
 }
 
@@ -383,10 +383,25 @@ async function submitHead(
 	opts: PushOptions,
 	head: PublishedTx,
 	content: PublishedTx[],
+	branchedFrom?: string,
 ): Promise<void> {
 	if (!opts.peer) return
 	const beefs: Array<number[] | Uint8Array> = [head.beef]
 	for (const tx of content) beefs.push(tx.beef.length ? tx.beef : rawBeef(tx.bytes))
+	// Admission refuses a head whose branched-from field is set unless the
+	// submission carries that head's transaction. The store has it: we only
+	// ever name a head we learned about, and learning about it wrote it
+	// there. Fail here rather than let the overlay answer generically.
+	if (branchedFrom) {
+		const { txid } = parseOutpoint(branchedFrom)
+		const bytes = await opts.store.get(txid)
+		if (!bytes) {
+			throw new Error(
+				`branching from ${branchedFrom} but ${txid} is not in the txstore: sync the branch it belongs to first`,
+			)
+		}
+		beefs.push(rawBeef(bytes))
+	}
 	await opts.peer.submit(atomicWithExtras(beefs, head.txid))
 }
 
@@ -557,8 +572,25 @@ async function currentHead(
 		limit: 1,
 	})
 	const o = listed.outputs?.[0]
-	if (!o?.lockingScript) return undefined
-	const token = decodeCommitToken(LockingScript.fromHex(o.lockingScript))
+	if (!o) return undefined
+	// `include: 'entire transactions'` returns the BEEF and leaves
+	// `lockingScript` unset — the script is in the transaction we already
+	// asked for. Requiring the field here read as "no spendable head" and
+	// tripped the second-chain guard on a perfectly good wallet.
+	if (!listed.BEEF?.length) {
+		throw new Error(`wallet returned no BEEF for ${o.outpoint}`)
+	}
+	const head = parseOutpoint(o.outpoint)
+	const beef = Beef.fromBinary(listed.BEEF)
+	const headTx =
+		beef.findAtomicTransaction(head.txid) ?? beef.findTxid(head.txid)?.tx
+	const lockingScript =
+		headTx?.outputs[head.vout]?.lockingScript ??
+		(o.lockingScript ? LockingScript.fromHex(o.lockingScript) : undefined)
+	if (!lockingScript) {
+		throw new Error(`wallet returned no locking script for ${o.outpoint}`)
+	}
+	const token = decodeCommitToken(lockingScript)
 	if (token.identityPubkey !== opts.identity) {
 		throw new Error(
 			`head ${o.outpoint} belongs to identity ${token.identityPubkey}`,
