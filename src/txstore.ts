@@ -1,7 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { BeefClient } from '@1sat/client'
 import { Transaction } from '@bsv/sdk'
 import { normalizeTxid } from './outpoint.ts'
 
@@ -14,20 +13,14 @@ export function defaultGibHome(): string {
 	return process.env.GIB_HOME ?? join(homedir(), '.gib')
 }
 
+/**
+ * A last-resort read-through for a transaction the store does not have.
+ * gib only ever reaches the peer the remote URL names: there is no
+ * default gateway here, because a client that quietly asks a third party
+ * for a repository's transactions is not a client of that repository's
+ * peer.
+ */
 export type FetchRawTx = (txid: string) => Promise<Uint8Array | undefined>
-
-export function defaultFetchRawTx(
-	baseUrl = process.env.GIB_BEEF_URL ?? 'https://api.1sat.app',
-): FetchRawTx {
-	const client = new BeefClient(baseUrl)
-	return async (txid) => {
-		try {
-			return await client.getRawTx(txid)
-		} catch {
-			return undefined
-		}
-	}
-}
 
 export function fileTxStore(root?: string, fetchTx?: FetchRawTx): TxStore {
 	const base = join(root ?? defaultGibHome(), 'txstore')

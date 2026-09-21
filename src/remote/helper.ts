@@ -1,167 +1,252 @@
+/**
+ * The git remote-helper protocol for gib: capabilities, list, fetch, push.
+ *
+ * A git remote is one peer on one repository origin
+ * (`gib://<host>/<repository origin>`). `list` refreshes every publisher's
+ * heads from the peer and advertises the user's own as
+ * `refs/heads/<branch>` and every other publisher's as
+ * `refs/heads/@<identity>/<branch>`. `fetch` walks a branch's spend chain
+ * back into git. `push` mints through the wallet and submits to the peer.
+ *
+ * Nothing here validates a chain: the peer's overlay does that, and this
+ * client asked it for what it got.
+ */
+
 import type { WalletInterface } from '@bsv/sdk'
-import { payloadFromScript } from '../content.ts'
-import { parseOutpoint } from '../outpoint.ts'
-import { loadTx, resolveOutpoint, resolvePath } from '../resolver.ts'
-import { collectTree, materializeGit } from '../tree.ts'
-import { decodeCommitToken } from '../token.ts'
+import { importHead } from '../fetch.ts'
+import { loadIdentity, saveIdentity } from '../identity.ts'
 import { pushLine } from '../push.ts'
 import { type Publisher, walletPublisher } from '../publish.ts'
-import { advertise, originFromUrl } from './advertise.ts'
-import { GIB_FILE, parseRepoMeta } from '../repo-meta.ts'
-import { commitParents, importHistory } from './history.ts'
+import {
+	emptyRepoState,
+	forgetHead,
+	loadRepoState,
+	recordHead,
+	type RepoState,
+	saveRepoState,
+} from '../refs.ts'
+import { readHead } from '../head.ts'
+import { NULL_SHA } from '../token.ts'
 import type { TxStore } from '../txstore.ts'
+import { advertise, chooseHead, type Ref, splitRef } from './advertise.ts'
+import type { Peer } from './peer.ts'
+import { pullRepo } from './sync.ts'
+import { parseGibUrl } from './url.ts'
 
 export type HelperIo = {
 	read: () => Promise<string | null>
 	write: (s: string) => void
 }
 
-export { advertise, originFromUrl }
-
-export async function runHelper(opts: {
+export type HelperOptions = {
 	url: string
-	/** Remote name git invoked us with; lets a genesis push rewrite its URL. */
-	remoteName?: string
 	store: TxStore
-	wallet?: WalletInterface
+	/** The peer the URL names, when it names one. */
+	peer?: Peer
+	/** Connects the wallet; only a push needs one. */
+	wallet?: () => Promise<WalletInterface>
 	/** Overrides the wallet-backed publisher (tests). */
 	publisher?: Publisher
 	gitDir: string
 	io: HelperIo
 	home?: string
-	/** Where progress lines go; defaults to stderr, which git relays to the user. */
+	/** Where progress lines go; git relays stderr to the user. */
 	log?: (s: string) => void
-}): Promise<void> {
-	let origin = originFromUrl(opts.url)
+	/** Branch names the local repository knows, to help a first refresh. */
+	localBranches?: string[]
+}
+
+export async function runHelper(opts: HelperOptions): Promise<void> {
+	const { origin } = parseGibUrl(opts.url)
 	const log = opts.log ?? ((s: string) => process.stderr.write(s))
+	const state = await loadRepoState(origin, opts.home)
+	let identity = await loadIdentity(opts.home)
+
+	/**
+	 * Refresh from the peer and advertise.
+	 *
+	 * For a push it is the *peer's* own view that git must compare against,
+	 * not everything this client knows: a head minted here and never sent
+	 * (a repository straight out of `gib init`, or a second remote added
+	 * later) would otherwise look to git like something the remote already
+	 * has, and git would send nothing. So the peer's answer is collected
+	 * into a state of its own, and merged into ours afterwards.
+	 */
+	const refresh = async (forPush = false): Promise<Ref[]> => {
+		if (!opts.peer) return advertise(state, identity)
+		const view = forPush ? emptyRepoState(origin) : state
+		if (forPush) view.branches = [...state.branches]
+		try {
+			const added = await pullRepo(
+				opts.peer,
+				opts.store,
+				view,
+				opts.localBranches ?? [],
+			)
+			if (added > 0 && !forPush) {
+				log(`gib: fetched ${added} head(s) from the remote\n`)
+			}
+			for (const w of view.warnings.splice(0)) log(`gib: ${w}\n`)
+		} catch (e) {
+			log(`gib: ${e instanceof Error ? e.message : e}\n`)
+		}
+		if (forPush) mergeState(state, view)
+		await saveRepoState(state, opts.home)
+		return advertise(view, identity)
+	}
+
 	for (;;) {
 		const line = await opts.io.read()
 		if (line === null) return
 		const cmd = line.trim()
+		if (cmd === '') continue
 		if (cmd === 'capabilities') {
 			opts.io.write('fetch\npush\n\n')
 			continue
 		}
 		if (cmd === 'list' || cmd === 'list for-push') {
-			const refs = opts.wallet
-				? await advertise(opts.wallet, opts.store, origin)
-				: []
+			const refs = await refresh(cmd === 'list for-push')
 			for (const r of refs) opts.io.write(`${r.sha} ${r.name}\n`)
-			const head = await chooseHead(opts.store, origin, refs)
+			const head = chooseHead(refs, state, identity)
 			if (head) opts.io.write(`@${head} HEAD\n`)
 			opts.io.write('\n')
 			continue
 		}
 		if (cmd.startsWith('fetch ')) {
-			const fetches = [cmd, ...(await readUntilBlank(opts.io))]
-			if (!opts.wallet) throw new Error('fetch requires wallet')
-			const refs = await advertise(opts.wallet, opts.store, origin)
-			for (const f of fetches) {
-				const sha = f.split(' ')[1]
-				const hit = refs.find((r) => r.sha === sha)
-				if (!hit) throw new Error(`unknown sha ${sha}`)
-				const listed = await opts.wallet.listOutputs({
-					basket: 'gib',
-					tags: [
-						`origin:${origin}`,
-						`branch:${hit.name.replace('refs/heads/', '')}`,
-					],
-					tagQueryMode: 'all',
-					include: 'locking scripts',
-					limit: 1,
-				})
-				const o = listed.outputs?.[0]
-				if (!o) throw new Error(`no token for ${hit.name}`)
-				await importHistory(opts.store, opts.gitDir, o.outpoint.replace('.', '_'))
+			const lines = [cmd, ...(await readUntilBlank(opts.io))]
+			for (const l of lines) {
+				const [, sha, ref] = l.split(' ')
+				try {
+					await fetchRef(opts, state, identity, sha, ref ?? '', log)
+				} catch (e) {
+					// Leaving the conversation mid-protocol makes git report
+					// a helper that died. Say what went wrong and finish the
+					// batch; git will notice the objects it wanted are
+					// missing and say so in its own words.
+					log(`gib: fetch ${sha.slice(0, 12)}: ${oneLine(e)}\n`)
+				}
 			}
+			await saveRepoState(state, opts.home)
 			opts.io.write('\n')
 			continue
 		}
 		if (cmd.startsWith('push ')) {
-			const pushes = [cmd, ...(await readUntilBlank(opts.io))]
-			if (!opts.wallet) {
-				for (const p of pushes) {
-					const dst = p.slice(p.lastIndexOf(':') + 1)
-					opts.io.write(`error ${dst} no wallet\n`)
+			const lines = [cmd, ...(await readUntilBlank(opts.io))]
+			let wallet: WalletInterface | undefined
+			try {
+				if (!opts.wallet) throw new Error('no wallet configured')
+				wallet = await opts.wallet()
+				const got = await wallet.getPublicKey({ identityKey: true })
+				identity = got.publicKey
+				await saveIdentity(identity, opts.home).catch(() => {})
+			} catch (e) {
+				for (const l of lines) {
+					opts.io.write(`error ${dstOf(l)} ${oneLine(e)}\n`)
 				}
 				opts.io.write('\n')
 				continue
 			}
-			const publisher = opts.publisher ?? walletPublisher(opts.wallet)
-			for (const p of pushes) {
-				const r = await pushLine({
-					line: p,
+			await refresh(true)
+			const publisher = opts.publisher ?? walletPublisher(wallet)
+			for (const l of lines) {
+				const r = await pushLine(l, {
 					gitDir: opts.gitDir,
 					store: opts.store,
-					wallet: opts.wallet,
+					wallet,
 					publisher,
 					origin,
+					identity,
+					peer: opts.peer,
+					knownHeads: Object.values(state.refs).map((r) => ({
+						outpoint: r.head,
+						sha: r.sha,
+						identity: r.identity,
+						branch: r.branch,
+						root: r.root,
+					})),
 					home: opts.home,
+					log,
 				})
-				if (r.ok) opts.io.write(`ok ${r.dst}\n`)
-				else opts.io.write(`error ${r.dst} ${r.error}\n`)
-				if (r.ok && isNewOrigin(origin) && r.origin && !isNewOrigin(r.origin)) {
-					// Genesis: the repository now has an identity. Later refs in
-					// this batch join it, and the remote is repointed so the next
-					// push does not mint a second repository.
-					origin = r.origin
-					const url = `gib://${r.origin}`
-					log(`gib: minted repository ${url}\n`)
-					if (opts.remoteName) {
-						const set = await setRemoteUrl(opts.gitDir, opts.remoteName, url)
-						log(
-							set
-								? `gib: remote '${opts.remoteName}' now points at ${url}\n`
-								: `gib: could not update remote '${opts.remoteName}'; run: git remote set-url ${opts.remoteName} ${url}\n`,
-						)
-					} else {
-						log(`gib: add it as a remote: git remote add origin ${url}\n`)
-					}
+				if (!r.ok) {
+					opts.io.write(`error ${r.dst} ${r.error}\n`)
+					continue
 				}
+				if (r.sha === NULL_SHA) forgetHead(state, identity, r.branch)
+				else if (r.head) {
+					const head = await readHead(opts.store, r.head)
+					recordHead(state, {
+						identity,
+						branch: r.branch,
+						head: r.head,
+						sha: r.sha,
+						root: head.token.root,
+					})
+				}
+				if (r.branchedFrom) {
+					log(`gib: ${r.branch} branches from ${r.branchedFrom}\n`)
+				}
+				opts.io.write(`ok ${r.dst}\n`)
 			}
+			await saveRepoState(state, opts.home)
 			opts.io.write('\n')
 			continue
 		}
-		if (cmd === '') continue
+		// Only fetch and push are advertised, so git should never send
+		// anything else; if it does, ignoring the line beats dying.
+		log(`gib: ignoring unsupported command ${cmd}\n`)
 	}
 }
 
-const isNewOrigin = (o: string) => o === '' || o === 'new'
-
-/**
- * The HEAD symref to advertise: `.gib` defaultBranch from the GENESIS tree
- * (the origin) when that branch exists, else main, master, or the first
- * ref. Best-effort; a missing or malformed `.gib` never breaks `list`.
- */
-export async function chooseHead(
-	store: TxStore,
-	origin: string,
-	refs: Array<{ name: string }>,
-	readMeta: (store: TxStore, root: string) => Promise<string | undefined> = defaultBranchFromTree,
-): Promise<string | undefined> {
-	if (refs.length === 0) return undefined
-	const names = new Set(refs.map((r) => r.name))
-	const preferred = ['refs/heads/main', 'refs/heads/master']
-	const wanted = await readMeta(store, origin)
-	if (wanted && names.has(`refs/heads/${wanted}`)) return `refs/heads/${wanted}`
-	return preferred.find((p) => names.has(p)) ?? refs[0].name
-}
-
-async function defaultBranchFromTree(store: TxStore, root: string): Promise<string | undefined> {
-	try {
-		const file = await resolvePath(store, parseOutpoint(root), GIB_FILE)
-		return parseRepoMeta(new TextDecoder().decode(file.bytes)).defaultBranch
-	} catch {
-		return undefined
+/** Fold a peer's view of a repository into what this client keeps. */
+function mergeState(state: RepoState, view: RepoState): void {
+	for (const r of Object.values(view.refs)) recordHead(state, r)
+	for (const [branch, cursor] of Object.entries(view.cursors)) {
+		state.cursors[branch] = cursor
 	}
 }
 
-async function setRemoteUrl(gitDir: string, remote: string, url: string): Promise<boolean> {
-	const proc = Bun.spawn(['git', '--git-dir', gitDir, 'remote', 'set-url', remote, url], {
-		stdout: 'pipe',
-		stderr: 'pipe',
-	})
-	return (await proc.exited) === 0
+/** Import the history behind one advertised ref. */
+async function fetchRef(
+	opts: HelperOptions,
+	state: RepoState,
+	identity: string,
+	sha: string,
+	ref: string,
+	log: (s: string) => void,
+): Promise<void> {
+	let head = headFor(state, identity, sha, ref)
+	if (!head && opts.peer) {
+		await pullRepo(opts.peer, opts.store, state, opts.localBranches ?? [])
+		head = headFor(state, identity, sha, ref)
+	}
+	if (!head) {
+		throw new Error(`no head on ${state.origin} publishes commit ${sha}`)
+	}
+	const imported = await importHead(opts.store, opts.gitDir, head, opts.peer)
+	log(
+		`gib: imported ${imported.commits} commit(s) and ${imported.trees} tree(s) for ${sha.slice(0, 12)}\n`,
+	)
+}
+
+function headFor(
+	state: RepoState,
+	identity: string,
+	sha: string,
+	ref: string,
+): string | undefined {
+	if (ref) {
+		try {
+			const { publisher, branch } = splitRef(ref, identity)
+			for (const r of Object.values(state.refs)) {
+				if (r.branch === branch && r.identity === publisher && r.sha === sha) {
+					return r.head
+				}
+			}
+		} catch {
+			// fall through to the sha search
+		}
+	}
+	return Object.values(state.refs).find((r) => r.sha === sha)?.head
 }
 
 async function readUntilBlank(io: HelperIo): Promise<string[]> {
@@ -174,21 +259,11 @@ async function readUntilBlank(io: HelperIo): Promise<string[]> {
 	return lines
 }
 
-export async function importCommit(
-	store: TxStore,
-	gitDir: string,
-	headOutpoint: string,
-): Promise<{ commit: string; tree: string; parents: string[] }> {
-	const op = parseOutpoint(headOutpoint)
-	const tx = await loadTx(store, op.txid)
-	const out = tx.outputs[op.vout]
-	if (!out) throw new Error(`missing head ${headOutpoint}`)
-	const payload = payloadFromScript(out.lockingScript)
-	if (!payload) throw new Error('commit head has no inscription')
-	const token = decodeCommitToken(out.lockingScript)
-	const root = parseOutpoint(token.root)
-	await resolveOutpoint(store, root)
-	const files = await collectTree(store, root)
-	const r = await materializeGit(gitDir, files, payload.bytes)
-	return { ...r, parents: commitParents(payload.bytes) }
+function dstOf(line: string): string {
+	return line.slice(line.lastIndexOf(':') + 1)
+}
+
+function oneLine(e: unknown): string {
+	const text = e instanceof Error ? e.message : String(e)
+	return text.split('\n').map((l) => l.trim()).filter(Boolean).join(' ')
 }

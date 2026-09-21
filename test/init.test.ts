@@ -1,94 +1,94 @@
-import { describe, expect, it } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { afterEach, describe, expect, it } from 'bun:test'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
+import { PrivateKey } from '@bsv/sdk'
 import { gibInit } from '../src/init.ts'
-import { formatRepoMeta, parseRepoMeta } from '../src/repo-meta.ts'
+import { loadIdentity } from '../src/identity.ts'
+import { loadRepoState } from '../src/refs.ts'
+import { parseRepoMeta } from '../src/repo-meta.ts'
+import { commitFiles, git, tempRepo } from './fakes/git.ts'
+import { FakeWallet } from './fakes/wallet.ts'
+import { memStore } from './helpers.ts'
 
-async function git(cwd: string, args: string[]) {
-	const proc = Bun.spawn(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' })
-	const [out, err, code] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	])
-	if (code !== 0) throw new Error(err || out)
-	return out.trim()
-}
+const trash: string[] = []
+afterEach(async () => {
+	for (const d of trash.splice(0)) await rm(d, { recursive: true, force: true })
+})
 
-async function repo(branch = 'main') {
-	const dir = await mkdtemp(join(tmpdir(), 'gib-init-'))
-	await git(dir, ['init', '-q', '-b', branch])
-	return dir
+async function setup(files: Record<string, string> = { 'README.md': '# x\n' }) {
+	const fake = await FakeWallet.create(new PrivateKey(4242))
+	const home = await mkdtemp(join(tmpdir(), 'gib-home-'))
+	const repo = await tempRepo(files)
+	trash.push(home, repo.dir)
+	return {
+		fake,
+		home,
+		repo,
+		opts: {
+			cwd: repo.dir,
+			wallet: fake.asWallet(),
+			store: memStore(),
+			home,
+		},
+	}
 }
 
 describe('gib init', () => {
-	it('defaults name to the directory and branch to the current one', async () => {
-		const dir = await repo('trunk')
-		try {
-			const r = await gibInit({ cwd: dir })
-			expect(r.meta).toEqual({ name: basename(dir), defaultBranch: 'trunk', description: undefined })
-			expect(parseRepoMeta(await readFile(join(dir, '.gib'), 'utf8'))).toEqual({
-				name: basename(dir),
-				defaultBranch: 'trunk',
-			})
-			expect(r.remoteAction).toBe('added')
-			expect(await git(dir, ['remote', 'get-url', 'origin'])).toBe('gib://new')
-		} finally {
-			await rm(dir, { recursive: true, force: true })
-		}
+	it('mints the repository, writes .gib and adds the local remote', async () => {
+		const { fake, home, repo, opts } = await setup()
+		const r = await gibInit(opts)
+		expect(r.created).toBe(true)
+		expect(r.origin).toMatch(/^[0-9a-f]{64}_\d+$/)
+		expect(r.branch).toBe('main')
+		expect(r.sha).toBe(repo.sha)
+		expect(r.identity).toBe(fake.identityKey)
+		expect(r.peerUrl).toBe(`gib://gibhub.net/${r.origin}`)
+
+		const meta = parseRepoMeta(await readFile(r.file, 'utf8'))
+		expect(meta.defaultBranch).toBe('main')
+		expect(meta.name).toBeTruthy()
+		expect(await git(repo.dir, ['remote', 'get-url', 'local'])).toBe(
+			`gib://${r.origin}`,
+		)
+
+		// The genesis head is on record, so `list` works before any peer.
+		const state = await loadRepoState(r.origin, home)
+		expect(state.genesis).toEqual({
+			identity: fake.identityKey,
+			branch: 'main',
+			head: r.head,
+		})
+		expect(await loadIdentity(home)).toBe(fake.identityKey)
 	})
 
-	it('takes explicit values and prompt answers, keeps an existing gib remote', async () => {
-		const dir = await repo()
-		try {
-			await git(dir, ['remote', 'add', 'origin', 'gib://abc_0'])
-			const r = await gibInit({
-				cwd: dir,
-				description: 'from flag',
-				prompt: async (d) => ({ ...d, name: 'chosen', defaultBranch: 'dev' }),
-			})
-			expect(r.meta).toEqual({ name: 'chosen', description: 'from flag', defaultBranch: 'dev' })
-			expect(r.remoteAction).toBe('unchanged')
-			expect(r.remoteUrl).toBe('gib://abc_0')
-		} finally {
-			await rm(dir, { recursive: true, force: true })
-		}
+	it('does not mint a second repository for a repository that has one', async () => {
+		const { fake, opts } = await setup()
+		const first = await gibInit(opts)
+		const before = fake.actionLog().length
+		const again = await gibInit(opts)
+		expect(again.created).toBe(false)
+		expect(again.origin).toBe(first.origin)
+		expect(fake.actionLog()).toHaveLength(before)
 	})
 
-	it('refuses to overwrite .gib without --force and to hijack a non-gib remote', async () => {
-		const dir = await repo()
-		try {
-			await writeFile(join(dir, '.gib'), formatRepoMeta({ name: 'keep' }))
-			await expect(gibInit({ cwd: dir })).rejects.toThrow(/already exists/)
-			const r = await gibInit({ cwd: dir, force: true })
-			expect(r.meta.name).toBe('keep')
-			await git(dir, ['remote', 'set-url', 'origin', 'https://example.com/x.git'])
-			await expect(gibInit({ cwd: dir, force: true })).rejects.toThrow(/already points at/)
-		} finally {
-			await rm(dir, { recursive: true, force: true })
-		}
+	it('publishes the branch HEAD is on', async () => {
+		const { repo, opts } = await setup()
+		await git(repo.dir, ['checkout', '-q', '-b', 'trunk'])
+		await commitFiles(repo.dir, { 'x.txt': 'x' }, 'on trunk')
+		const r = await gibInit(opts)
+		expect(r.branch).toBe('trunk')
+		expect(r.meta.defaultBranch).toBe('trunk')
 	})
 
-	it('runs git init when the directory is not a repository', async () => {
-		const plain = await mkdtemp(join(tmpdir(), 'gib-plain-'))
-		try {
-			const r = await gibInit({ cwd: plain, defaultBranch: 'trunk' })
-			expect(r.gitInitialized).toBe(true)
-			expect(r.meta.defaultBranch).toBe('trunk')
-			expect(await git(plain, ['symbolic-ref', '--short', 'HEAD'])).toBe('trunk')
-			expect(await git(plain, ['remote', 'get-url', 'origin'])).toBe('gib://new')
-		} finally {
-			await rm(plain, { recursive: true, force: true })
-		}
-	})
-
-	it('rejects a bad default branch', async () => {
-		const dir = await repo()
-		try {
-			await expect(gibInit({ cwd: dir, defaultBranch: 'bad name' })).rejects.toThrow(/branch/)
-		} finally {
-			await rm(dir, { recursive: true, force: true })
-		}
+	it('refuses a directory that is not a git repository, or has no commit', async () => {
+		const { opts } = await setup()
+		const empty = await mkdtemp(join(tmpdir(), 'gib-empty-'))
+		trash.push(empty)
+		expect(gibInit({ ...opts, cwd: empty })).rejects.toThrow(
+			/not a git repository/,
+		)
+		await git(empty, ['init', '-q'])
+		expect(gibInit({ ...opts, cwd: empty })).rejects.toThrow(/at least one commit/)
 	})
 })

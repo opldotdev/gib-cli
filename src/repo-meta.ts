@@ -3,10 +3,23 @@
  *
  *   { "name": "my-repo", "description": "…", "defaultBranch": "main" }
  *
- * gib itself never needs it: the origin outpoint is the repository's
- * identity. The file gives humans and indexers (gibhub, the overlay) a
- * display name and tells clones which branch HEAD should point at.
- * `gib init` writes it; it travels with the tree like any other file.
+ * gib itself never needs it: the repository origin is the repository's
+ * identity, and the branch a repository was created on is the genesis
+ * head's. The file gives humans and indexers (gibhub, the overlay) a
+ * display name.
+ *
+ * `defaultBranch` is still written for one reason: no lookup enumerates a
+ * repository's branches, so a clone that has never heard of this
+ * repository has nothing else to ask a peer for. It goes when that query
+ * exists.
+ *
+ * The file may later carry publishing hints — how deep a patch chain to
+ * allow before writing a file whole, how many outputs to put in one
+ * transaction, how large a stream to publish at once. They would be
+ * hints a client MAY honour and nothing more: a reader cannot check them,
+ * a publisher cannot be made to follow them, and every one of them is a
+ * preference about cost, not a rule about format. None is implemented;
+ * the client uses its own defaults and would go on doing so.
  */
 
 export const GIB_FILE = '.gib'

@@ -1,5 +1,5 @@
 import { pushDropDecode } from '@1sat/actions'
-import { LockingScript, OP, Script, Utils } from '@bsv/sdk'
+import { LockingScript, Utils } from '@bsv/sdk'
 
 export const GIB_PROTOCOL: [0 | 1 | 2, string] = [1, 'gib branch']
 export const GIB_BASKET = 'gib'
@@ -8,9 +8,26 @@ export const GIB_FIELD0 = 'gib'
 export type CommitToken = {
 	origin: string
 	branch: string
+	/** Outpoint of the published root directory this head points at. */
 	root: string
 	identityPubkey: string
+	/**
+	 * The head this one branched from, or merged in: empty on an ordinary
+	 * push, which has only the head it spends.
+	 *
+	 * A head's parents mirror its commit's parents by construction. The
+	 * spend is the first parent's lineage; this field is the other one —
+	 * set on a branch's first head (naming the head it forked from) and on
+	 * a merge (naming a head publishing the second parent).
+	 */
+	branchedFrom: string
 }
+
+/**
+ * Fields on the wire, in order. The signature pushDropLock appends makes
+ * the seventh.
+ */
+export const COMMIT_TOKEN_FIELDS = 6
 
 export function gibKeyId(rootOutpoint: string): string {
 	return rootOutpoint
@@ -33,6 +50,9 @@ export function branchTag(branch: string): string {
 export const LABEL_PUSH = 'gib push'
 export const LABEL_DELETE = 'gib delete'
 
+/** What git calls a deleted ref. */
+export const NULL_SHA = '0'.repeat(40)
+
 export function commitTag(sha: string): string {
 	return `commit:${sha}`
 }
@@ -42,44 +62,50 @@ export function pushDescription(kind: 'content' | 'head', sha: string): string {
 	return `gib ${kind} ${sha}`.slice(0, 50)
 }
 
-function prefixBeforeOrd(script: Script): Script {
-	const chunks = script.chunks
-	for (let i = 0; i < chunks.length - 2; i++) {
-		const marker = chunks[i + 2]
-		if (
-			chunks[i]?.op === OP.OP_0 &&
-			chunks[i + 1]?.op === OP.OP_IF &&
-			marker?.data != null &&
-			marker.data.length === 3 &&
-			Utils.toUTF8(marker.data) === 'ord'
-		) {
-			const p = new Script()
-			for (let j = 0; j < i; j++) p.chunks.push(chunks[j])
-			return p
-		}
-	}
-	return script
+/**
+ * An absent field is an empty push, which PushDrop encodes minimally as
+ * OP_FALSE — the same opcode a single zero byte encodes to, so the two
+ * cannot be told apart once on chain. Both read back as absent.
+ */
+function optional(field: number[] | undefined): string {
+	if (!field || field.length === 0) return ''
+	if (field.length === 1 && field[0] === 0) return ''
+	return Utils.toUTF8(field)
 }
 
+/**
+ * Decode a gib commit head.
+ *
+ * A head is a bare PushDrop: six fields plus the signature, and nothing
+ * else on the output. The five-field heads with a commit inscription that
+ * gib published before this are a different format and do not decode here;
+ * that is deliberate, and there is no compatibility path.
+ */
 export function decodeCommitToken(lockingScript: LockingScript | string): CommitToken {
 	const script =
 		typeof lockingScript === 'string'
 			? LockingScript.fromHex(lockingScript)
 			: lockingScript
-	const { fields } = pushDropDecode(prefixBeforeOrd(script))
+	const { fields } = pushDropDecode(script)
+	if (fields.length !== COMMIT_TOKEN_FIELDS + 1) {
+		throw new Error(
+			`not a gib commit head: ${fields.length} fields, want ${COMMIT_TOKEN_FIELDS} and a signature`,
+		)
+	}
 	const str = (i: number) => {
 		const f = fields[i]
-		if (!f) throw new Error(`commit token missing field ${i}`)
+		if (!f) throw new Error(`commit head missing field ${i}`)
 		return Utils.toUTF8(f)
 	}
 	if (str(0) !== GIB_FIELD0) {
-		throw new Error(`not a gib commit token (field0=${str(0)})`)
+		throw new Error(`not a gib commit head (field0=${str(0)})`)
 	}
 	return {
 		origin: str(1),
 		branch: str(2),
 		root: str(3),
 		identityPubkey: str(4),
+		branchedFrom: optional(fields[5]),
 	}
 }
 
@@ -90,5 +116,6 @@ export function commitTokenFields(t: CommitToken): number[][] {
 		Utils.toArray(t.branch, 'utf8'),
 		Utils.toArray(t.root, 'utf8'),
 		Utils.toArray(t.identityPubkey, 'utf8'),
+		t.branchedFrom ? Utils.toArray(t.branchedFrom, 'utf8') : [],
 	]
 }

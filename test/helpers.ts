@@ -1,4 +1,14 @@
-import { OP, P2PKH, PrivateKey, Script, Transaction, Utils } from '@bsv/sdk'
+import {
+	OP,
+	P2PKH,
+	PrivateKey,
+	Script,
+	Transaction,
+	Utils,
+	type WalletInterface,
+} from '@bsv/sdk'
+import { sealCommitLock } from '../src/seal.ts'
+import type { CommitToken } from '../src/token.ts'
 import type { TxStore } from '../src/txstore.ts'
 
 export function memStore(seed?: Map<string, Uint8Array>): TxStore {
@@ -48,4 +58,26 @@ export function txWithOutputs(scripts: Script[]): { txid: string; bytes: Uint8Ar
 	}
 	const bin = tx.toBinary()
 	return { txid: tx.id('hex'), bytes: new Uint8Array(bin) }
+}
+
+/**
+ * A head transaction for tests: a bare PushDrop token, optionally
+ * spending the head before it.
+ */
+export async function headTx(
+	wallet: WalletInterface,
+	token: CommitToken,
+	prev?: Transaction,
+): Promise<Transaction> {
+	const tx = new Transaction()
+	if (prev) {
+		tx.addInput({
+			sourceTransaction: prev,
+			sourceOutputIndex: 0,
+			unlockingScript: new Script(),
+			sequence: 0xffffffff,
+		})
+	}
+	tx.addOutput({ satoshis: 1, lockingScript: await sealCommitLock(wallet, token) })
+	return tx
 }
