@@ -64,7 +64,7 @@ import {
 	NULL_SHA,
 	originTag,
 } from './token.ts'
-import { GIT_DIR } from './tree.ts'
+import { collectTxids, GIT_DIR } from './tree.ts'
 import type { TxStore } from './txstore.ts'
 
 /** A head this client already knows about, for finding what to branch from. */
@@ -506,10 +506,20 @@ async function syncPeer(
 		if (!out) throw new Error(`sync: ${outpoint} is not an output`)
 		const token = decodeCommitToken(out.lockingScript)
 		const beefs: Array<number[] | Uint8Array> = [rawBeef(bytes)]
-		const rootTxid = parseOutpoint(token.root).txid
-		const rootBytes =
-			rootTxid === op.txid ? undefined : await opts.store.get(rootTxid)
-		if (rootBytes) beefs.push(rawBeef(rootBytes))
+		// A peer that has never seen this repository needs the content the
+		// head's tree cites, not just the transaction the root is in: the
+		// tree reaches back through the whole history.
+		const cited = await collectTxids(opts.store, parseOutpoint(token.root))
+		if (!cited.complete) {
+			opts.log?.(
+				`gib: ${outpoint} cites more content than one submission carries; the remote may need a later sync\n`,
+			)
+		}
+		for (const txid of cited.txids) {
+			if (txid === op.txid) continue
+			const content = await opts.store.get(txid)
+			if (content) beefs.push(rawBeef(content))
+		}
 		await opts.peer.submit(atomicWithExtras(beefs, op.txid))
 	}
 }

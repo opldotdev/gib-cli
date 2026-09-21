@@ -184,6 +184,54 @@ function reprefix(snapshot: TreeSnapshot, prefix: string): TreeSnapshot {
 }
 
 /**
+ * Every transaction the directory graph under `root` cites, held locally.
+ *
+ * A published root reaches back through the whole history — the `.git`
+ * store names every ancestor's objects — so this is bounded, and says
+ * when the bound was hit rather than walking for ever.
+ */
+export async function collectTxids(
+	store: TxStore,
+	root: Outpoint,
+	limit = 200,
+): Promise<{ txids: string[]; complete: boolean }> {
+	const txids = new Set<string>([root.txid])
+	const seen = new Set<string>()
+	let level: Outpoint[] = [root]
+	let complete = true
+	while (level.length > 0) {
+		const next: Outpoint[] = []
+		for (const op of level) {
+			const key = formatOutpoint(op)
+			if (seen.has(key)) continue
+			seen.add(key)
+			let node: Awaited<ReturnType<typeof resolveOutpoint>>
+			try {
+				node = await resolveOutpoint(store, op)
+			} catch {
+				complete = false
+				continue
+			}
+			txids.add(op.txid)
+			if (node.contentType !== DIR_CONTENT_TYPE) continue
+			for (const e of dirDecode(node.bytes).entries) {
+				const child: Outpoint =
+					e.ref.kind === 'same-tx'
+						? { txid: op.txid, vout: e.ref.vout }
+						: { txid: e.ref.txid.toLowerCase(), vout: e.ref.vout }
+				if (txids.size >= limit && !txids.has(child.txid)) {
+					complete = false
+					continue
+				}
+				next.push(child)
+			}
+		}
+		level = next
+	}
+	return { txids: [...txids], complete }
+}
+
+/**
  * Write a file list into git as a tree, and return the tree sha. The files
  * must already have `.git` stripped: this is git's tree, not gib's root.
  */

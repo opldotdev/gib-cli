@@ -14,7 +14,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { PrivateKey } from '@bsv/sdk'
-import { readHead } from '../src/head.ts'
+import { previousHead, readHead } from '../src/head.ts'
 import { parseOutpoint } from '../src/outpoint.ts'
 import { readDir } from '../src/tree.ts'
 import { fileTxStore } from '../src/txstore.ts'
@@ -228,6 +228,9 @@ describe('git end to end', () => {
 		// A merge head carries both: the spend is the first parent, the
 		// field is the one it merged in.
 		expect(mergeToken.token.branchedFrom).toBe(head2.outpoint)
+		expect(
+			await previousHead(fileTxStore(home1), mergeHead.outpoint),
+		).toBe(mainHeads[mainHeads.length - 2].outpoint)
 		expect(await must(repo.dir, env1, ['git', 'ls-remote', 'gib'])).toContain(
 			`${merge}\trefs/heads/main`,
 		)
@@ -236,6 +239,24 @@ describe('git end to end', () => {
 		await must(clone, readerEnv, ['git', 'checkout', '-q', '-'])
 		await must(clone, readerEnv, ['git', 'fetch', '-q', 'origin'])
 		await must(clone, readerEnv, ['git', 'fsck', '--strict', '--no-dangling'])
+
+		// A second peer, which has never heard of the repository: pushing
+		// to it sends the whole chain and the content its trees cite, so a
+		// reader can clone from it too.
+		const mirror = startFakePeer()
+		stoppable.push(mirror)
+		const mirrorUrl = `gib://${mirror.host}/${origin}`
+		await must(repo.dir, env1, ['git', 'remote', 'add', 'mirror', mirrorUrl])
+		await must(repo.dir, env1, ['git', 'push', '-q', 'mirror', 'main'])
+		expect(mirror.heads().length).toBeGreaterThanOrEqual(3)
+		const work3 = await mkdtemp(join(tmpdir(), 'gib-work3-'))
+		const readerHome3 = await mkdtemp(join(tmpdir(), 'gib-reader3-'))
+		trash.push(work3, readerHome3)
+		const readerEnv3 = env(readerHome3, 'http://127.0.0.1:1')
+		await must(work3, readerEnv3, ['git', 'clone', '-q', mirrorUrl, 'demo'])
+		const clone3 = join(work3, 'demo')
+		expect(await must(clone3, readerEnv3, ['git', 'rev-parse', 'HEAD'])).toBe(merge)
+		await must(clone3, readerEnv3, ['git', 'fsck', '--strict', '--no-dangling'])
 
 		// A branch, then deleting it on the peer.
 		await must(repo.dir, env1, ['git', 'checkout', '-q', '-b', 'scratch'])
