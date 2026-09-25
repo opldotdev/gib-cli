@@ -65,11 +65,13 @@ re-litigation here. This file is about how to work in the repository.
 
 ## Known gaps
 
-- `ls_gib` has no query that enumerates a repository's branches. `branchCandidates` in
-  `src/remote/sync.ts` guesses from what is already known, the genesis tree's `.gib`
-  `defaultBranch`, and `main`/`master`; `gib sync <url> <branch>` is how a user names one
-  it could not guess. That is why `gib init` still writes `defaultBranch`, and it is the
-  one gap with a visible cost to users.
+- `ls_gib` now has a `branches` query (1sat-stack #55), which answers a repository's
+  branches with their publisher, tip, and the repository's `defaultBranch` and `owner`
+  taken from the genesis head. This client does not use it yet: `branchCandidates` in
+  `src/remote/sync.ts` still guesses from what is already known, the genesis tree's
+  `.gib` `defaultBranch`, and `main`/`master`, and `gib sync <url> <branch>` is still how
+  a user names one it could not guess. Wiring it up removes the guessing and the reason
+  `gib init` writes `defaultBranch`.
 - A push reads every reachable commit's tree it has not published before, one
   `git ls-tree` at a time, and holds the tree being planned in memory. The first push of
   a long history is bounded by that.
