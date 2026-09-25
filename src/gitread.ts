@@ -1,0 +1,191 @@
+import type { IncomingFile } from './cascade.ts'
+
+async function git(gitDir: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
+	const proc = Bun.spawn(['git', `--git-dir=${gitDir}`, ...args], {
+		stdout: 'pipe',
+		stderr: 'pipe',
+	})
+	const [out, err, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	])
+	return { code, out, err }
+}
+
+async function gitBytes(gitDir: string, args: string[]): Promise<{ code: number; out: Uint8Array; err: string }> {
+	const proc = Bun.spawn(['git', `--git-dir=${gitDir}`, ...args], {
+		stdout: 'pipe',
+		stderr: 'pipe',
+	})
+	const [out, err, code] = await Promise.all([
+		new Response(proc.stdout).arrayBuffer(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	])
+	return { code, out: new Uint8Array(out), err }
+}
+
+export async function revParse(gitDir: string, rev: string): Promise<string> {
+	const r = await git(gitDir, ['rev-parse', '--verify', rev])
+	if (r.code !== 0) throw new Error(`git rev-parse ${rev}: ${r.err.trim()}`)
+	return r.out.trim()
+}
+
+/**
+ * True when `anc` is an ancestor of `desc`. git exits 1 for "no" and 128
+ * for "I have never heard of that commit" — which happens when the head
+ * the wallet holds publishes a commit this clone does not have. Reporting
+ * that as "not an ancestor" would tell the user their push is a
+ * non-fast-forward when it is nothing of the kind.
+ */
+export async function isAncestor(gitDir: string, anc: string, desc: string): Promise<boolean> {
+	const r = await git(gitDir, ['merge-base', '--is-ancestor', anc, desc])
+	if (r.code === 0) return true
+	if (r.code === 1) return false
+	throw new Error(
+		`this clone does not have commit ${anc}, which the branch's current head publishes: ${r.err.trim()}`,
+	)
+}
+
+export async function commitBytes(gitDir: string, sha: string): Promise<Uint8Array> {
+	const r = await gitBytes(gitDir, ['cat-file', 'commit', sha])
+	if (r.code !== 0) throw new Error(`git cat-file commit ${sha}: ${r.err.trim()}`)
+	return r.out
+}
+
+export function treeShaFromCommit(commit: Uint8Array): string {
+	const text = new TextDecoder().decode(commit)
+	const m = text.match(/^tree ([0-9a-f]{40})/m)
+	if (!m) throw new Error('commit missing tree')
+	return m[1]
+}
+
+export async function filesAtCommit(gitDir: string, sha: string): Promise<IncomingFile[]> {
+	const r = await git(gitDir, ['ls-tree', '-r', '-z', sha])
+	if (r.code !== 0) throw new Error(`git ls-tree ${sha}: ${r.err.trim()}`)
+	const files: IncomingFile[] = []
+	for (const rec of r.out.split('\0')) {
+		if (!rec) continue
+		const tab = rec.indexOf('\t')
+		if (tab < 0) continue
+		const meta = rec.slice(0, tab)
+		const path = rec.slice(tab + 1)
+		const [mode, type, blob] = meta.split(' ')
+		if (type === 'commit') {
+			// A gitlink has no bytes to publish. Saying so here beats the
+			// tree-mismatch error the push would otherwise die of, which
+			// names neither submodules nor the path.
+			throw new Error(
+				`${path} is a submodule (gitlink); gib cannot publish submodules`,
+			)
+		}
+		if (type !== 'blob') continue
+		const blobR = await gitBytes(gitDir, ['cat-file', 'blob', blob])
+		if (blobR.code !== 0) throw new Error(`git cat-file blob ${blob}: ${blobR.err.trim()}`)
+		files.push({
+			path,
+			bytes: blobR.out,
+			exec: mode === '100755',
+			symlink: mode === '120000',
+			contentType: guessType(path),
+		})
+	}
+	return files
+}
+
+function guessType(path: string): string {
+	if (path === '.gib' || path.endsWith('/.gib')) return 'application/json'
+	if (path.endsWith('.md')) return 'text/markdown'
+	if (path.endsWith('.html')) return 'text/html'
+	if (path.endsWith('.json')) return 'application/json'
+	if (path.endsWith('.ts') || path.endsWith('.js') || path.endsWith('.txt')) {
+		return 'text/plain'
+	}
+	return 'application/octet-stream'
+}
+
+export function parsePushLine(line: string): {
+	force: boolean
+	src: string
+	dst: string
+	del: boolean
+} {
+	let s = line.replace(/^push\s+/, '')
+	const force = s.startsWith('+')
+	if (force) s = s.slice(1)
+	const i = s.lastIndexOf(':')
+	if (i < 0) throw new Error(`bad push spec: ${line}`)
+	const src = s.slice(0, i)
+	const dst = s.slice(i + 1)
+	return { force, src, dst, del: src === '' }
+}
+
+/**
+ * Commits to publish: everything reachable from `tip` that is not already
+ * reachable from a commit some head already publishes, oldest first. That
+ * ordering is the order the heads are minted in, so the spend chain and
+ * the commit history run the same way.
+ */
+export async function revList(
+	gitDir: string,
+	tip: string,
+	have: string[] = [],
+	limit = 100_000,
+): Promise<string[]> {
+	const args = ['rev-list', '--reverse', '--topo-order', `--max-count=${limit}`, tip]
+	for (const h of have) args.push(`^${h}`)
+	const r = await git(gitDir, args)
+	if (r.code !== 0) throw new Error(`git rev-list ${tip}: ${r.err.trim()}`)
+	return r.out.split('\n').map((l) => l.trim()).filter(Boolean)
+}
+
+/** True when git has the object, of that type (or any type). */
+export async function hasObject(
+	gitDir: string,
+	sha: string,
+	type: 'commit' | 'any' = 'commit',
+): Promise<boolean> {
+	const rev = type === 'commit' ? `${sha}^{commit}` : sha
+	return (await git(gitDir, ['cat-file', '-e', rev])).code === 0
+}
+
+/**
+ * Every commit reachable from `tip`, oldest first, with the sha of the
+ * tree it names. One call, because a repository's whole history is asked
+ * for on every push.
+ */
+export async function commitTreePairs(
+	gitDir: string,
+	tip: string,
+	limit = 200_000,
+): Promise<Array<{ sha: string; tree: string }>> {
+	const r = await git(gitDir, [
+		'log',
+		'--reverse',
+		'--topo-order',
+		`--max-count=${limit}`,
+		'--format=%H %T',
+		tip,
+	])
+	if (r.code !== 0) throw new Error(`git log ${tip}: ${r.err.trim()}`)
+	return r.out
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.map((l) => {
+			const [sha, tree] = l.split(' ')
+			return { sha, tree }
+		})
+}
+
+/** Branch names the local repository has, for a first refresh from a peer. */
+export async function localBranches(gitDir: string): Promise<string[]> {
+	const r = await git(gitDir, [
+		'for-each-ref',
+		'--format=%(refname:short)',
+		'refs/heads',
+	])
+	if (r.code !== 0) return []
+	return r.out.split('\n').map((l) => l.trim()).filter(Boolean)
+}

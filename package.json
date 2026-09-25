@@ -1,0 +1,27 @@
+{
+	"name": "gib-cli",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"bin": {
+		"git-remote-gib": "src/git-remote-gib.ts",
+		"gib": "src/main.ts"
+	},
+	"scripts": {
+		"test": "bun test",
+		"typecheck": "tsc --noEmit",
+		"gib": "bun run src/main.ts",
+		"git-remote-gib": "bun run src/git-remote-gib.ts"
+	},
+	"dependencies": {
+		"@1sat/actions": "0.0.224",
+		"@1sat/client": "^0.0.55",
+		"@1sat/templates": "^0.0.38",
+		"@bsv/sdk": "^2.6.0",
+		"xdelta3-wasm": "^1.0.0"
+	},
+	"devDependencies": {
+		"@types/bun": "^1.2.0",
+		"typescript": "^5.9.3"
+	}
+}

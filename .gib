@@ -1,0 +1,5 @@
+{
+  "name": "gib-cli",
+  "description": "git remote helper for gib, on-chain git on BSV",
+  "defaultBranch": "feat/gib"
+}
