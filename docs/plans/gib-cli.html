@@ -53,7 +53,9 @@ branch inventory is the wallet's basket/tags; list-by-tag returns full transacti
 no local-remote fiction.</li>
 <li><strong>Chain = everything else:</strong> all content reads are transactions (BEEF from
 chain/overlay sources). <strong>No content is ever read from ORDFS</strong> — ORDFS is at
-most a slight indexer for origin/sequence correlation.</li>
+most a slight indexer for origin/sequence correlation. Tips can still be followed by
+ORDFS origin: content is read from the overlay or from ORDFS, which serve the same
+inscriptions.</li>
 </ul>
 
 <h2 id="semantics">Command semantics (final 2026-09-18: git stays git)</h2>
@@ -99,6 +101,8 @@ PHASE 2 — commit head tx (last, always exactly one):
               + INSCRIPTION on that same output = the git commit object
                 (verbatim bytes) ]
    keyID = the new root outpoint — computable because content landed first.</pre>
+<p class="note">The current design uses a bare PushDrop head with no content, rather than
+the inscribed commit object shown above (see the README "Status" section).</p>
 <ul>
 <li><strong>The commit head is one output</strong>: pointer, identity, and git meaning are
 inseparable — spending the token carries the commit object with it. Manifest

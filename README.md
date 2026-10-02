@@ -5,6 +5,22 @@ inscriptions; branch pointers are sealed push-drop coins ("commit tokens"); gib 
 top of local git as the chain codec + pointer/authority layer via a `git-remote-gib`
 remote helper. Git stays git — only push/fetch touch the chain.
 
+## Status
+
+`master` is documentation; there is no implementation here yet. The implementation is
+on two open PRs, to be merged: [#1](https://github.com/opldotdev/gib-cli/pull/1)
+(`feat/gib`: txstore, resolver, cascade, git-remote-gib) and
+[#4](https://github.com/opldotdev/gib-cli/pull/4) (`fix/head-lookup-and-fork-submit`).
+
+The head is a bare 1-sat PushDrop token with no inscribed content, spent forward on
+each push, so its spend chain is an ordinal chain and can be followed by ORDFS origin
+once ORDFS exposes resolution metadata without content. gib's content form is ORDFS
+inscriptions — `ordfs/dir` directory manifests, bare file content, and `ordfs/patch`
+vcdiff patches with a 36-byte base outpoint — the same form `shruggr/skein` reads and
+writes.
+
+See issues filed today for the open points.
+
 **Start here:**
 - `docs/plans/ROADMAP.md` — workstreams, build order, settled decisions.
 - `docs/plans/ordfs-formats.html` — the `ordfs/dir` / `ordfs/patch` byte specs (the

@@ -110,7 +110,8 @@ identity pubkey); the <strong>git commit object itself rides the same tx as an
 inscription blob</strong> — verbatim bytes (~126 B minimal, 200–300 B typical) so git
 hashes recreate exactly. Git's full sync payload: blobs + trees (reconstructible from
 manifests/chains except file MODES) + commit objects (verbatim) + annotated tag
-objects (same treatment) + ref names (branch field).</li>
+objects (same treatment) + ref names (branch field). The current design instead uses
+a bare PushDrop head with no content (see the gib-cli README "Status" section).</li>
 <li><strong>Fields (decided 2026-09-18):</strong> <code>["gib", origin, branch name,
 root outpoint, identity pubkey]</code> — outermost scope first: project, then branch,
 then state. Identity pubkey is REQUIRED — derived from the gibhub indexer

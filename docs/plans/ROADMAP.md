@@ -32,7 +32,9 @@ was proven on mainnet). Build order respects dependencies on A/B interfaces — 
 against the specs, not the gateway implementation.
 1. txstore: global store per install, `get/put(txid)`, stores SIGNED bytes only,
    verify by recomputing txid. Medium: files behind the interface (see questions.md).
-2. resolver: outpoint -> content. Chain/BEEF only, never ORDFS content. Walk
+2. resolver: outpoint -> content. Chain/BEEF only, never ORDFS content (tips can
+   still be followed by ORDFS origin; content is read from the overlay or from
+   ORDFS, which serve the same inscriptions). Walk
    `ordfs/dir` + `ordfs/patch` to file bytes and manifest state.
 3. git-remote-gib helper: advertise (wallet list-by-tags origin:/branch:), fetch
    (walk-from-outpoint), push intake (pack -> records + cascade + commit head + seal).
